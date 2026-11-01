@@ -16,10 +16,11 @@ and accepting or rejecting changes. CSV remains an alternative for the same revi
 
 ## Development
 
-Install uv, just and prek, then run:
+Install uv and just, then run:
 
 ```sh
 just py-sync
+uv tool install prek
 prek install
 just check
 just hooks

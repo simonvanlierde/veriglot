@@ -1,0 +1,19 @@
+{
+  "@context": "https://w3id.org/codemeta/3.0",
+  "@type": "SoftwareSourceCode",
+  "name": "veriglot",
+  "description": "Review app translations with local models and deterministic checks",
+  "author": [
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0009-0006-6953-909X",
+      "givenName": "Simon",
+      "familyName": "van Lierde",
+      "email": "code@duinlab.nl"
+    }
+  ],
+  "codeRepository": "https://github.com/simonvanlierde/veriglot",
+  "issueTracker": "https://github.com/simonvanlierde/veriglot/issues",
+  "license": "https://spdx.org/licenses/MIT",
+  "programmingLanguage": "Python"
+}

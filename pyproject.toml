@@ -14,10 +14,10 @@ classifiers = ["Private :: Do Not Upload"]
 
 [dependency-groups]
 dev = [
-  "pytest>=9.1.1",
+  "pytest>=9.2.0",
   "pytest-cov>=7.1.0",
-  "ruff>=0.17.1",
-  "ty>=0.0.89",
+  "ruff>=0.17.3",
+  "ty>=0.0.93",
   "jupyterlab>=4.6.4",
 ]
 

@@ -191,7 +191,7 @@ with one change for transformers 5; software was transformers 4.57.6 and torch 2
 8 seconds for all items. The script in the repository needs a checkout of that commit and has not been run against the unpatched file.
 
 A score is not a flag, so a threshold turns it into one. Each threshold was chosen on the 150 unperturbed controls so that
-about 7% (the flag rate of Qwen's review) or 10% of them score above it. That makes the recall **in-sample**: the
+about 7% (the flag rate of Qwen's review in the earlier-prompt run) or 10% of them score above it. That makes the recall **in-sample**: the
 threshold was tuned on the controls of the set it is then scored on, so the figures are not an out-of-sample estimate. The tables are
 recomputed from `scores.jsonl` by `veriglot bench score ITEMS --qe DIR`; the 10% target flagged 15 of 150 controls.
 
@@ -208,7 +208,7 @@ recomputed from `scores.jsonl` by `veriglot bench score ITEMS --qe DIR`; the 10%
 | register | 0/24 = 0% [0%-14%] | 2/24 = 8% [2%-26%] |
 | flags on unperturbed strings | 10/150 = 7% [4%-12%] | 15/150 = 10% [6%-16%] |
 
-At a matched flag rate the QE scorer catches far less than Qwen's review (Qwen flags 5% of controls in the headline run and finds at least
+Even with a looser threshold than Qwen's the QE scorer catches far less than Qwen's review (Qwen flags 5% of controls in the headline run and finds at least
 88% of every kind). It finds most untranslated runs (28/36 at 7%) and about half the omissions, and little else.
 MetricX is a general translation-quality scorer. It was not trained for terminology or register rules, and it sees no
 glossary or style rule, so its near-zero terminology and register rows measure that mismatch as well as

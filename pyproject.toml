@@ -7,10 +7,13 @@ requires-python = ">=3.14"
 authors = [{ name = "Simon van Lierde", email = "code@duinlab.nl" }]
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = ["babel>=2.18"]
 # PyPI rejects unknown classifiers, so this one blocks an accidental upload.
 # Delete it (and set publish_to_pypi) to publish.
 classifiers = ["Private :: Do Not Upload"]
+
+[project.scripts]
+veriglot = "veriglot.cli:main"
 
 [dependency-groups]
 dev = [
@@ -19,6 +22,7 @@ dev = [
   "ruff>=0.17.1",
   "ty>=0.0.89",
   "jupyterlab>=4.6.4",
+  "hypothesis>=6",
 ]
 
 # Research projects are packaged too, so notebooks can `import veriglot`
@@ -65,12 +69,14 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101", "D1", "INP001", "PLR2004", "ANN201"]
 "*.ipynb" = ["T201", "E402"] # notebooks print and import late
+"src/veriglot/icu.py" = ["EM101", "EM102", "TRY003"] # parse errors are raised as self.fail("what")
+"src/veriglot/cli.py" = ["T201"] # stdout is the CLI's output
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.pylint]
-allow-magic-value-types = ["int"]
+allow-magic-value-types = ["int", "str"]
 max-args = 10
 
 # A rule set to "warn" reports without failing: ty otherwise exits 1 on warnings too.

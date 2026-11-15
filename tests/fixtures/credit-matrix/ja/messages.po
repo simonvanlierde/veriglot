@@ -1,0 +1,39 @@
+msgid ""
+msgstr ""
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "stepContributors"
+msgstr "貢献者"
+
+msgid "cancel"
+msgstr "キャンセル"
+
+msgid "annContributorRestored"
+msgstr "{name} を元に戻しました。"
+
+msgid "importedContributors"
+msgstr "{count}名の貢献者をインポートしました。"
+
+msgid "normsPosition"
+msgstr "{position, select, single {単独} first {筆頭} middle {中間} other {最終}}"
+
+msgid "errImportNoXmlContribs"
+msgstr "XML に <contrib> 要素が見つかりませんでした。"
+
+msgid "sampleNames"
+msgstr "Hideki Yukawa\nMichiyo Tsujimura\nShibasaburo Kitasato"
+
+msgid "output.labelSeparator"
+msgstr "："
+
+msgid "output.nameListSeparator"
+msgstr "、"
+
+msgid "output.levelAnnotation"
+msgstr "{label}（{level}）"
+
+msgid "https://credit.niso.org/contributor-roles/conceptualization/name"
+msgstr "研究の立案"

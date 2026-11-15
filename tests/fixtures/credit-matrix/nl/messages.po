@@ -1,0 +1,39 @@
+msgid ""
+msgstr ""
+"Language: nl\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "stepContributors"
+msgstr "Bijdragers"
+
+msgid "cancel"
+msgstr "Annuleren"
+
+msgid "annContributorRestored"
+msgstr "{name} hersteld."
+
+msgid "importedContributors"
+msgstr "{count, plural, one {# bijdrager} other {# bijdragers}} geïmporteerd."
+
+msgid "normsPosition"
+msgstr "{position, select, single {Enige} first {Eerste} middle {Midden} other {Laatste}}"
+
+msgid "errImportNoXmlContribs"
+msgstr "Geen <contrib>-elementen gevonden in de XML."
+
+msgid "sampleNames"
+msgstr "Christiaan Huygens\nJohanna Westerdijk\nJan Ingenhousz"
+
+msgid "output.labelSeparator"
+msgstr ": "
+
+msgid "output.nameListSeparator"
+msgstr ", "
+
+msgid "output.levelAnnotation"
+msgstr "{label} ({level})"
+
+msgid "https://credit.niso.org/contributor-roles/conceptualization/name"
+msgstr "Conceptualisatie"

@@ -8,7 +8,9 @@ Every call is logged with the model, server version, prompt hash, settings and t
 """
 
 import hashlib
+import http.client
 import json
+import re
 import threading
 import time
 import tomllib
@@ -25,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from babel import Locale
 from pydantic import BaseModel, ValidationError
 
+from veriglot.canary import CANARY
 from veriglot.review import Finding, Kind, Severity, check_entry, fingerprint
 
 if TYPE_CHECKING:
@@ -120,15 +123,26 @@ def check_endpoint(base_url: str, *, allow_remote: bool) -> None:
         raise ValueError(msg)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None  # a redirect is an error: it could lead off this machine
+
+
 def _http(url: str, body: dict[str, Any] | None, timeout: float) -> dict[str, Any]:
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - scheme checked by the caller's base URL
+    if (urllib.parse.urlsplit(url).hostname or "") in LOOPBACK:
+        # A proxy variable must not carry a local request off this machine.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    else:
+        opener = urllib.request.build_opener()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with opener.open(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read(300).decode("utf-8", "replace")
-        msg = f"HTTP {exc.code} from the model server: {detail}"
+        what = "redirect not followed" if 300 <= exc.code < 400 else "error"
+        msg = f"HTTP {exc.code} ({what}) from the model server: {detail}"
         raise OSError(msg) from exc
 
 
@@ -177,14 +191,14 @@ class ModelClient:
         except OSError, ValueError:
             self.server_version = None  # not every server has /version
 
-    def _body(self, prompt_text: str, schema: type[BaseModel], attempt: int) -> dict[str, Any]:
+    def _body(self, prompt_text: str, schema: type[BaseModel], attempt: int, max_tokens: int) -> dict[str, Any]:
         s = self.settings
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt_text}],
             "temperature": s.temperature,
             "seed": s.seed + attempt,
-            "max_tokens": s.max_tokens,
+            "max_tokens": max_tokens,
         }
         json_schema = schema.model_json_schema()
         if s.constraint == "structured_outputs":
@@ -192,7 +206,7 @@ class ModelClient:
         elif s.constraint == "response_format":
             body["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": schema.__name__, "schema": json_schema, "strict": True},
+                "json_schema": {"name": schema.__name__, "schema": json_schema},
             }
         return body | s.extra_body
 
@@ -203,11 +217,14 @@ class ModelClient:
         """
         text = prompt.render(**values)
         error = "no attempt"
+        max_tokens = self.settings.max_tokens
         for attempt in (0, 1):
             started = time.monotonic()
             record: dict[str, Any] = {}
             try:
-                reply = self._transport(f"{self.base_url}/chat/completions", self._body(text, schema, attempt))
+                reply = self._transport(
+                    f"{self.base_url}/chat/completions", self._body(text, schema, attempt, max_tokens)
+                )
                 choice = reply["choices"][0]
                 record = {
                     "finish_reason": choice.get("finish_reason"),
@@ -215,11 +232,13 @@ class ModelClient:
                     "content": choice["message"].get("content"),
                 }
                 parsed = self._validate(record, schema)
-            except (OSError, KeyError, IndexError, TypeError, ValueError) as exc:
+            except (OSError, http.client.HTTPException, KeyError, IndexError, TypeError, ValueError) as exc:
                 # ValidationError is a ValueError; a refusal or a cut-off answer lands here too.
                 error = f"{type(exc).__name__}: {exc}"[:300]
                 parsed = None
-            self._log(prompt, tag, attempt, started, record, error if parsed is None else None)
+            self._log(prompt, tag, attempt, started, record, error if parsed is None else None, max_tokens)
+            if record.get("finish_reason") == "length":
+                max_tokens *= 2  # the same budget would cut the answer off again
             if parsed is not None:
                 return CallResult(parsed, None, attempt + 1)
         return CallResult(None, error, 2)
@@ -237,7 +256,14 @@ class ModelClient:
             raise ValueError(msg) from exc
 
     def _log(
-        self, prompt: Prompt, tag: str, attempt: int, started: float, record: dict[str, Any], error: str | None
+        self,
+        prompt: Prompt,
+        tag: str,
+        attempt: int,
+        started: float,
+        record: dict[str, Any],
+        error: str | None,
+        max_tokens: int,
     ) -> None:
         if self.log_path is None:
             return
@@ -252,7 +278,7 @@ class ModelClient:
             "settings": {
                 "temperature": self.settings.temperature,
                 "seed": self.settings.seed + attempt,
-                "max_tokens": self.settings.max_tokens,
+                "max_tokens": max_tokens,
                 "constraint": self.settings.constraint,
                 "extra_body": self.settings.extra_body,
             },
@@ -262,8 +288,12 @@ class ModelClient:
             "error": error,
             **record,
         }
-        with self._lock, self.log_path.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with self._lock:
+            new = not self.log_path.exists()
+            with self.log_path.open("a", encoding="utf-8", newline="\n") as f:
+                if new:
+                    f.write(json.dumps({"canary": CANARY}) + "\n")
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 @dataclass(frozen=True)
@@ -307,11 +337,18 @@ class Glossary:
         """The style rule and the glossary lines whose English term occurs in ``source``."""
         lowered = source.lower()
         lines = []
+        language = re.split(r"[-_]", locale)[0]  # nl-NL and nl_BE use the nl entries when they have none of their own
         for t in self.terms:
-            if t["en"].lower() in lowered and locale in t:
+            if t["en"].lower() in lowered and (key := next((k for k in (locale, language) if k in t), None)):
                 note = f" ({t['note']})" if t.get("note") else ""
-                lines.append(f"- {t['en']} -> {t[locale]}{note}")
-        return self.style.get(locale, "none"), "\n".join(lines) or "- none apply"
+                lines.append(f"- {t['en']} -> {t[key]}{note}")
+        style = self.style.get(locale) or self.style.get(language, "none")
+        return style, "\n".join(lines) or "- none apply"
+
+
+def _quote(text: str) -> str:
+    """A JSON string literal: catalog text cannot end its field or start a new instruction line."""
+    return json.dumps(text, ensure_ascii=False)
 
 
 def language_name(locale: str) -> str:
@@ -385,12 +422,12 @@ def review_entry(
         f"{locale}:{key}",
         language=language_name(locale),
         locale=locale,
-        key=key,
-        context=context or "none",
+        key=_quote(key),
+        context=_quote(context or "none"),
         style=style,
         glossary=terms,
-        source=source,
-        target=target,
+        source=_quote(source),
+        target=_quote(target),
     )
     if not isinstance(result.parsed, ModelReview):
         return EntryReview((), "", result.error)
@@ -404,7 +441,13 @@ def judge_entry(
 ) -> tuple[bool | None, str, str | None]:
     """The baseline: ``(correct, rationale, failure)`` from a plain "is this translation correct?" question."""
     result = client.complete(
-        prompt, Verdict, f"{locale}:{key}", language=language_name(locale), locale=locale, source=source, target=target
+        prompt,
+        Verdict,
+        f"{locale}:{key}",
+        language=language_name(locale),
+        locale=locale,
+        source=_quote(source),
+        target=_quote(target),
     )
     if not isinstance(result.parsed, Verdict):
         return None, "", result.error

@@ -157,7 +157,8 @@ def _model_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--extra-body",
-        default="{}",
+        type=_json_object,
+        default={},
         metavar="JSON",
         help='merged into every request, e.g. \'{"chat_template_kwargs": {"enable_thinking": false}}\'',
     )
@@ -172,14 +173,21 @@ def _model_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _json_object(text: str) -> dict[str, object]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        msg = f"not JSON: {exc}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if not isinstance(value, dict):
+        msg = "must be a JSON object such as '{}'"
+        raise argparse.ArgumentTypeError(msg)
+    return value
+
+
 def _client(args: argparse.Namespace) -> model_mod.ModelClient:
     model_mod.check_endpoint(args.base_url, allow_remote=args.allow_remote)
-    try:
-        extra = json.loads(args.extra_body)
-    except json.JSONDecodeError as exc:
-        msg = f"--extra-body is not JSON: {exc}"
-        raise ValueError(msg) from exc
-    settings = model_mod.Settings(args.temperature, args.seed, args.max_tokens, args.constraint, extra)
+    settings = model_mod.Settings(args.temperature, args.seed, args.max_tokens, args.constraint, args.extra_body)
     client = model_mod.ModelClient(args.base_url, args.model, settings=settings, log_path=args.log)
     client.preflight()
     return client
@@ -247,10 +255,15 @@ def _review_model(args: argparse.Namespace) -> int:
     prompt = model_mod.load_prompt("review")
     findings: list[Finding] = []
     errors: list[dict[str, str | None]] = []
+    locales: set[str] = set()
     for path in args.targets:
         if path.resolve() == args.source.resolve():
             continue
         target = load_catalog(path)
+        if target.locale in locales:
+            msg = f"two targets for {target.locale}; ids are <locale>:<key>:<kind>, so each locale may appear once"
+            raise ValueError(msg)
+        locales.add(target.locale)
         entries = [
             (k, s.text, target.entries[k].text, target.entries[k].context)
             for k, s in source.entries.items()

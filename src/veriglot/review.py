@@ -48,6 +48,12 @@ class Kind(StrEnum):
     GRAMMAR = "grammar"
 
 
+# Kinds the deterministic checks never report: their absence after an edit proves nothing.
+MODEL_ONLY_KINDS = frozenset(
+    {Kind.MEANING, Kind.OMISSION, Kind.ADDITION, Kind.TERMINOLOGY, Kind.REGISTER, Kind.GRAMMAR}
+)
+
+
 class Severity(StrEnum):
     """How bad a finding is: only errors fail a check."""
 

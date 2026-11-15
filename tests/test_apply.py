@@ -169,3 +169,16 @@ def test_apply_clears_fuzzy_and_says_so(tmp_path: Path):
     assert "fuzzy" not in path.read_text(encoding="utf-8")
     again = apply_decisions(SOURCE, load_catalog(path), rows[:1])
     assert statuses(again) == [("cancel:fuzzy", "skipped", "already applied")]
+
+
+def test_later_model_row_on_a_changed_entry_is_stale_not_resolved(target: Path):
+    # check_entry never reports a model kind, so "the finding is gone" cannot be shown: the row is stale.
+    rows = [
+        row("output.labelSeparator", "whitespace", ": ", ":", "accept", proposed=": "),
+        row("output.labelSeparator", "meaning", ": ", ":", "accept", proposed=" - "),
+    ]
+    report = apply_decisions(SOURCE, load_catalog(target), rows, dry_run=True)
+    assert statuses(report) == [
+        ("output.labelSeparator:whitespace", "applied", ""),
+        ("output.labelSeparator:meaning", "rejected", "stale"),
+    ]

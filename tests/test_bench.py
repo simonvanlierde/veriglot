@@ -407,3 +407,36 @@ def test_bench_run_warns_when_the_output_is_not_git_ignored(tmp_path: Path, caps
     assert capsys.readouterr().err == ""
     bench.warn_if_not_ignored(tmp_path / "tracked" / "run")
     assert "not ignored by git" in capsys.readouterr().err
+
+
+def _qe_items() -> tuple[list[bench.Item], dict[str, float]]:
+    items = [bench.Item(f"nl:c{i}:clean", "nl", f"c{i}", "clean", "s", "t", "t") for i in range(10)]
+    items += [bench.Item(f"nl:p{i}:omission", "nl", f"p{i}", "omission", "s", "t", "t") for i in range(4)]
+    scores = {f"nl:c{i}:clean": float(i) for i in range(10)}  # controls score 0..9
+    scores |= {f"nl:p{i}:omission": s for i, s in enumerate([1.0, 5.0, 8.5, 12.0])}
+    return items, scores
+
+
+def test_qe_threshold_flags_the_requested_share_of_controls():
+    items, scores = _qe_items()
+    t = bench.qe_threshold(items, scores, 0.2)
+    assert t == 7.0  # controls scoring 8 and 9 exceed it
+    cells = bench.qe_cells(items, scores, t)
+    assert (cells["clean", "all"].k, cells["clean", "all"].n) == (2, 10)
+    assert (cells["omission", "nl"].k, cells["omission", "nl"].n) == (2, 4)  # 8.5 and 12.0
+
+
+def test_qe_table_and_cli_read_scores_and_check_the_items_hash(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    items, scores = _qe_items()
+    bench.write_jsonl(tmp_path / "items.jsonl", (bench.asdict(i) for i in items))
+    qe = tmp_path / "qe"
+    bench.write_jsonl(qe / "scores.jsonl", ({"id": k, "score": v} for k, v in scores.items()))
+    sha = bench.sha256_file(tmp_path / "items.jsonl")
+    (qe / "manifest.json").write_text(json.dumps({"items_sha256": sha}), encoding="utf-8")
+    assert bench.read_scores(qe, sha) == scores
+    with pytest.raises(ValueError, match="items_sha256"):
+        bench.read_scores(qe, "0" * 64)
+    assert main(["bench", "score", str(tmp_path / "items.jsonl"), "--qe", str(qe), "--qe-rate", "0.2"]) == 0
+    out = capsys.readouterr().out
+    assert "score > 7.00 (target 20%)" in out
+    assert "2/4 = 50%" in out

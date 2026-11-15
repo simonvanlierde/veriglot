@@ -615,3 +615,60 @@ def table(items: list[Item], runs: dict[str, Path], locale: str = "all", items_s
             + " |"
         )
     return "\n".join(rows)
+
+
+# --- quality-estimation baseline ------------------------------------------------------------------
+
+
+def read_scores(scores_dir: Path, items_sha: str | None = None) -> dict[str, float]:
+    """Read ``scores.jsonl`` of a quality-estimation run (lower is better).
+
+    Raises:
+        ValueError: the scores were made on other items than ``items_sha``.
+    """
+    manifest = scores_dir / "manifest.json"
+    if (
+        items_sha
+        and manifest.exists()
+        and json.loads(manifest.read_text(encoding="utf-8"))["items_sha256"] != items_sha
+    ):
+        msg = f"{scores_dir.as_posix()} was scored on other items (items_sha256 differs)"
+        raise ValueError(msg)
+    return {r["id"]: float(r["score"]) for r in read_jsonl(scores_dir / "scores.jsonl")}
+
+
+def qe_threshold(items: list[Item], scores: dict[str, float], rate: float) -> float:
+    """The score above which a string is flagged so that about ``rate`` of the controls are.
+
+    Chosen on the controls of the same benchmark, so the recall it gives is in-sample: it
+    shows what a threshold tuned on clean strings catches, not what an unseen threshold would.
+    """
+    controls = sorted((scores[i.id] for i in items if i.kind == CONTROL), reverse=True)
+    return controls[int(rate * len(controls))]
+
+
+def qe_cells(items: list[Item], scores: dict[str, float], threshold: float) -> dict[tuple[str, str], Cell]:
+    """Cells keyed by ``(kind, locale)``: items whose score exceeds ``threshold`` are flagged."""
+    counts: dict[tuple[str, str], list[int]] = {}
+    for item in items:
+        for loc in (item.locale, "all"):
+            c = counts.setdefault((item.kind, loc), [0, 0])
+            c[1] += 1
+            c[0] += scores[item.id] > threshold
+    return {k: Cell(c[0], c[1]) for k, c in counts.items()}
+
+
+def qe_table(items: list[Item], scores: dict[str, float], rates: list[float], locale: str = "all") -> str:
+    """Markdown table of the quality-estimation scorer at thresholds that flag ``rates`` of the controls."""
+    thresholds = [qe_threshold(items, scores, r) for r in rates]
+    cells = [qe_cells(items, scores, t) for t in thresholds]
+    head = (
+        "| Planted kind | "
+        + " | ".join(f"score > {t:.2f} (target {r:.0%})" for t, r in zip(thresholds, rates, strict=True))
+        + " |"
+    )
+    rows = [head, "|---|" + "---|" * len(rates)]
+    for kind in (*KINDS, CONTROL):
+        label = "flags on unperturbed strings" if kind == CONTROL else kind
+        rows.append(f"| {label} | " + " | ".join(_fmt(c.get((kind, locale))) for c in cells) + " |")
+    return "\n".join(rows)

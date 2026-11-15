@@ -137,8 +137,16 @@ def _parser() -> argparse.ArgumentParser:
         brun.add_argument(f"--{name}", default="", help=f"recorded in the manifest ({name.replace('-', ' ')})")
     score = bench_sub.add_parser("score", help="recall per kind and language with Wilson 95%% intervals")
     score.add_argument("items", type=Path, help="items.jsonl from `bench make`")
-    score.add_argument("runs", type=Path, nargs="+", help="run directories from `bench run`")
+    score.add_argument("runs", type=Path, nargs="*", help="run directories from `bench run`")
     score.add_argument("--locale", default="all", help="language to tabulate (default all)")
+    score.add_argument("--qe", type=Path, metavar="DIR", help="MetricX scores directory (scripts/metricx_qe.py output)")
+    score.add_argument(
+        "--qe-rate",
+        type=float,
+        action="append",
+        metavar="RATE",
+        help="share of controls the QE threshold flags, on the controls themselves (repeatable; default 0.07 and 0.10)",
+    )
     return parser
 
 
@@ -317,8 +325,17 @@ def _bench(args: argparse.Namespace) -> int:
             return 3
         return 0
     items = bench_mod.read_items(args.items)
-    runs = dict(zip(bench_mod.run_labels(args.runs), args.runs, strict=True))
-    print(bench_mod.table(items, runs, args.locale, bench_mod.sha256_file(args.items)))
+    if not args.runs and not args.qe:
+        msg = "give at least one run directory or --qe"
+        raise ValueError(msg)
+    if args.runs:
+        runs = dict(zip(bench_mod.run_labels(args.runs), args.runs, strict=True))
+        print(bench_mod.table(items, runs, args.locale, bench_mod.sha256_file(args.items)))
+    if args.qe:
+        scores = bench_mod.read_scores(args.qe, bench_mod.sha256_file(args.items))
+        if args.runs:
+            print()
+        print(bench_mod.qe_table(items, scores, args.qe_rate or [0.07, 0.10], args.locale))
     return 0
 
 

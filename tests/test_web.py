@@ -146,7 +146,15 @@ def test_localhost_host_is_allowed(server: ReviewServer):
 
 def test_oversized_body_is_413(server: ReviewServer, target: Path):
     before = target.read_bytes()
-    assert call(server, "POST", "/api/decisions", raw=b"x" * (2 * 1024 * 1024))[0] == 413
+    # Headers only: the server rejects on Content-Length and closes, so writing the body races it.
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+    conn.putrequest("POST", "/api/decisions", skip_host=True)
+    conn.putheader("Host", f"127.0.0.1:{server.server_port}")
+    conn.putheader("X-Veriglot-Token", server.token)
+    conn.putheader("Content-Length", str(2 * 1024 * 1024))
+    conn.endheaders()
+    assert conn.getresponse().status == 413
+    conn.close()
     assert target.read_bytes() == before
 
 

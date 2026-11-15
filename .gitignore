@@ -34,3 +34,7 @@ coverage/
 
 # Rust
 target/
+
+# Benchmark data is private: the generator is public, the strings and model outputs are not.
+data/bench/
+*.log.jsonl

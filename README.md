@@ -3,8 +3,9 @@
 Review app translations with local models and deterministic checks.
 
 The `veriglot` command checks translation catalogs against their source catalog and
-applies the corrections a reviewer accepted. Model-assisted review is
-planned; see the [design](docs/design.md).
+applies the corrections a reviewer accepted, from the command line or a local web page.
+`veriglot review-model` adds model-assisted review on a local server. See the
+[design](docs/design.md) and the [benchmark](docs/benchmark.md).
 
 ## Scope
 
@@ -41,6 +42,7 @@ Each finding has a stable `id` (`<locale>:<key>:<kind>`), the source and target 
 | `whitespace` | warning | leading or trailing whitespace, or a newline count, that differs from the source |
 | `tag` | error | rich-text tags such as `<contrib>` or `<0>` missing or added, outside branches and per branch |
 | `fuzzy` | info | an entry marked `#, fuzzy` |
+| `meaning`, `omission`, `addition`, `terminology`, `register`, `grammar` | per finding | only `review-model` reports these (it also uses `untranslated`) |
 
 Branches are compared one by one with the source branch of the same key, else with the
 source `other` branch, so a locale may have more or fewer plural categories than the source.
@@ -81,6 +83,68 @@ and import use the review CSV columns. See [accessibility](docs/accessibility.md
 
 CRediT role names (`https://credit.niso.org/contributor-roles/...`) are vendored and
 never written; `--read-only GLOB` protects more keys.
+
+## Model-assisted review
+
+`review-model` asks a language model about each translation. It speaks the chat-completions
+protocol, so any server that takes a base URL and a model name works (vLLM, llama.cpp
+`llama-server`); the package imports no model library. Model findings are suggestions, not native
+review. They use the same `Finding` type, CSV and `apply` step as `check`, with `proposed`
+filled when the model proposes a fix that passes the deterministic checks.
+
+```sh
+veriglot review-model src/locales/en/messages.po src/locales/nl/messages.po \
+  --base-url http://127.0.0.1:8000/v1 --model my-model --glossary glossary.toml --format csv
+```
+
+- The server must serve `--model`; the command exits 3 if it does not or cannot be reached. A base
+  URL that is not on this machine needs `--allow-remote`: nothing is sent to a hosted API otherwise.
+- Answers are constrained to a JSON schema (`structured_outputs`; `--constraint response_format` for
+  servers that use that field, `none` to skip), validated again, checked for `finish_reason`, and
+  retried once. An entry that still fails is reported on stderr and in the JSON `errors`, and the
+  exit code is 3.
+- Every call is appended to `--log` (default `veriglot-model.log.jsonl`): model, server version,
+  prompt name and SHA-256, settings, attempt, finish reason, token counts and the raw answer.
+- `--with-checks` merges the deterministic findings. Placeholder, plural, tag and syntax problems
+  stay with those checks; the prompt tells the model not to report them.
+- `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'` adds request fields, for
+  example to turn reasoning off.
+- The prompts are `src/veriglot/prompts/review.md` (source, target, locale, key, context, glossary)
+  and `direct-judge.md`, the baseline that asks only whether a translation is correct.
+
+A glossary is TOML. `[style]` holds a rule per locale; each `[[term]]` has an `en` source term, one
+key per locale and an optional `note`. Only terms whose English side occurs in the entry's source
+reach the prompt.
+
+```toml
+[style]
+nl = "Address the user formally: u, uw."
+
+[[term]]
+en = "draft"
+nl = "concept"
+de = "Entwurf"
+```
+
+### Benchmark
+
+`veriglot bench make` plants one error per clean translation, `bench run` asks a model in both
+modes (the review prompt and the direct judge) and writes a run manifest, and `bench score` prints
+recall per planted kind with Wilson 95% intervals. The data stays under the ignored `data/bench/`,
+every file starting with a canary line; the method and results are in [docs/benchmark.md](docs/benchmark.md).
+
+```sh
+veriglot bench make en.po nl.po de.po fr.po --out data/bench --handwritten data/bench/handwritten.jsonl
+veriglot bench run data/bench/items.jsonl --out data/bench/runs/m1 --base-url http://127.0.0.1:8000/v1 \
+  --model m1 --glossary data/bench/glossary.toml --model-repo org/m1 --revision <hash>
+veriglot bench score data/bench/items.jsonl data/bench/runs/m1
+```
+
+`bench run` appends each answer as it arrives, asks again for failed ones when rerun into the same `--out`
+(and refuses a different model, prompt or items there), and exits 3 if any answer failed. A MetricX-24
+quality-estimation baseline comes from `uv run scripts/metricx_qe.py` (it needs a GPU and a checkout of
+google-research/metricx; see its docstring) and is tabulated with `bench score ITEMS --qe DIR`.
+Call logs end in `.log.jsonl` and are git-ignored; each starts with the canary line.
 
 ## Development
 

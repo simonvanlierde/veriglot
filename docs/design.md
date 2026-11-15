@@ -111,6 +111,15 @@ whose msgids are keys and whose `en` msgstrs are the source text. The modules:
   carriage return, possibly after apostrophes) get one leading `'`, stripped again on
   read. Sensebank's review CSV uses the same rule; it is part of the shared contract.
 
-Flat JSON catalogs are check-only. The per-locale review-status sidecar and model
-findings are not built yet: the next step is to benchmark model findings against
-planted errors.
+Flat JSON catalogs are check-only. The per-locale review-status sidecar is not built yet.
+
+- `model` asks a chat-completions server about one entry and returns `Finding`s of the model
+  kinds (`meaning`, `omission`, `addition`, `terminology`, `register`, `grammar`, `untranslated`).
+  Findings of one kind are merged so ids stay `<locale>:<key>:<kind>`, and a proposal is kept only
+  if it differs from the target and passes the deterministic checks, so `apply` accepts it.
+  Placeholder, plural, tag and syntax defects belong to the deterministic checks.
+- `bench` plants errors in clean translations (seeded perturbations, plus hand-written ones for
+  language-dependent kinds) and scores recall per kind for the review prompt and a direct-judge
+  baseline, and tabulates a MetricX quality-estimation scorer at matched flag rates. Model scores
+  are not a substitute for native review, and the benchmark does not record who wrote the translations
+  it uses, so it cannot exclude a model judging its own output; see [the benchmark](benchmark.md).

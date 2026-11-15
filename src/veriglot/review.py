@@ -39,6 +39,19 @@ class Kind(StrEnum):
     WHITESPACE = "whitespace"
     TAG = "tag"
     FUZZY = "fuzzy"
+    # Kinds only a model review reports; the deterministic checks never produce them.
+    MEANING = "meaning"
+    OMISSION = "omission"
+    ADDITION = "addition"
+    TERMINOLOGY = "terminology"
+    REGISTER = "register"
+    GRAMMAR = "grammar"
+
+
+# Kinds the deterministic checks never report: their absence after an edit proves nothing.
+MODEL_ONLY_KINDS = frozenset(
+    {Kind.MEANING, Kind.OMISSION, Kind.ADDITION, Kind.TERMINOLOGY, Kind.REGISTER, Kind.GRAMMAR}
+)
 
 
 class Severity(StrEnum):

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from veriglot.catalog import Catalog, CatalogChangedError, is_read_only, write_texts
-from veriglot.review import Kind, Severity, check_entry, fingerprint
+from veriglot.review import MODEL_ONLY_KINDS, Kind, Severity, check_entry, fingerprint
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -133,7 +133,9 @@ def _decide(  # noqa: C901, PLR0911, PLR0912 - one return per outcome keeps the 
         return Outcome(row.id, "skipped", "already applied", text=text)
     source_text = source.entries[key].text if key in source.entries else ""
     if fingerprint(source_text, current[key]) != row.fingerprint:
-        if key in changes and kind not in {f.kind for f in check_entry(target.locale, key, source_text, current[key])}:
+        # Only a kind the checks can report may be "resolved"; a model kind is stale as soon as the text changed.
+        detected = {f.kind for f in check_entry(target.locale, key, source_text, current[key])}
+        if key in changes and Kind(kind) not in MODEL_ONLY_KINDS and kind not in detected:
             return Outcome(row.id, "skipped", "resolved", "an earlier row fixed it", text)
         return rejected("stale", "the source or target text changed after the review", text)
     errors = [f.message for f in check_entry(target.locale, key, source_text, text) if f.severity is Severity.ERROR]

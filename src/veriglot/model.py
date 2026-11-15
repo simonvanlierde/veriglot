@@ -17,7 +17,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
@@ -31,7 +31,7 @@ from veriglot.canary import CANARY
 from veriglot.review import Finding, Kind, Severity, check_entry, fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
 MODEL_KINDS = (Kind.MEANING, Kind.OMISSION, Kind.ADDITION, Kind.TERMINOLOGY, Kind.REGISTER, Kind.GRAMMAR)
@@ -452,6 +452,17 @@ def judge_entry(
     if not isinstance(result.parsed, Verdict):
         return None, "", result.error
     return result.parsed.correct, result.parsed.rationale, None
+
+
+def iter_concurrently[T, R](func: Callable[[T], R], items: Sequence[T], concurrency: int) -> Iterator[R]:
+    """Yield ``func(item)`` as each call finishes (input order when ``concurrency`` is 1)."""
+    if concurrency <= 1:
+        for item in items:
+            yield func(item)
+        return
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for future in as_completed([pool.submit(func, i) for i in items]):
+            yield future.result()
 
 
 def map_concurrently[T, R](func: Callable[[T], R], items: Sequence[T], concurrency: int) -> list[R]:

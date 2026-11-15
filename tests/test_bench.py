@@ -1,5 +1,6 @@
 import json
 import math
+import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
@@ -8,11 +9,13 @@ from hypothesis import strategies as st
 
 from veriglot import bench
 from veriglot import model as model_mod
+from veriglot.canary import CANARY_GUID
 from veriglot.catalog import Catalog, load_catalog
 from veriglot.cli import main
 
 if TYPE_CHECKING:
     import random
+    from collections.abc import Callable
     from pathlib import Path
 
 BASE = "http://127.0.0.1:8000/v1"
@@ -136,7 +139,7 @@ def test_make_writes_canaried_items_with_controls_and_planted_errors(tmp_path: P
     en, nl = catalogs
     counts = bench.make(en, [nl], tmp_path / "out", handwritten=None, controls=3, per_kind=2)
     first = (tmp_path / "out/items.jsonl").read_text(encoding="utf-8").splitlines()[0]
-    assert bench.CANARY_GUID in first
+    assert CANARY_GUID in first
     items = bench.read_items(tmp_path / "out/items.jsonl")
     assert counts["items"]["nl"]["clean"] == 3
     assert {i.kind for i in items} >= {"clean", "omission", "addition", "negation", "entity"}
@@ -261,3 +264,146 @@ def test_cli_bench_make_and_score(tmp_path: Path, capsys: pytest.CaptureFixture[
     )
     assert json.loads(capsys.readouterr().out)["nl"]["clean"] == 2
     assert (out / "items.jsonl").exists()
+
+
+def test_untranslated_needs_enough_source_words_for_the_span():
+    target = " ".join(f"woord{i}" for i in range(20))  # a span of 6 words
+    assert bench.untranslated("one two three four five six", target, "nl", rng()) is None
+    new, _ = ok(bench.untranslated(" ".join(f"w{i}" for i in range(12)), target, "nl", rng()))
+    assert len(new.split()) == 20
+
+
+def test_handwritten_item_for_a_key_missing_from_the_target_is_a_clear_error(tmp_path: Path, catalogs: Cats):
+    en, nl = catalogs
+    en_only = en.entries["k1"]
+    bench.write_jsonl(
+        tmp_path / "h.jsonl", [{"locale": "nl", "key": "k1", "kind": "sense", "original": "x", "target": "y"}]
+    )
+    del nl.entries["k1"]
+    assert en_only
+    with pytest.raises(ValueError, match="no entry"):
+        bench.handwritten_items(tmp_path / "h.jsonl", {"nl": nl}, en)
+
+
+def _make(tmp_path: Path, catalogs: Cats) -> Path:
+    en, nl = catalogs
+    bench.make(en, [nl], tmp_path / "data", handwritten=None, controls=2, per_kind=1)
+    return tmp_path / "data/items.jsonl"
+
+
+def _client(transport: Callable[[str, dict | None], dict], model: str = "m") -> model_mod.ModelClient:
+    return model_mod.ModelClient(BASE, model, transport=transport)
+
+
+def test_answers_are_written_as_they_arrive(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+    calls = []
+
+    def transport(_url: str, _body: dict | None) -> dict:
+        calls.append(1)
+        if len(calls) > 3:
+            raise KeyboardInterrupt
+        return judge_reply(correct=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        bench.run(
+            items,
+            tmp_path / "run",
+            _client(transport),
+            model_mod.Glossary(),
+            bench.RunInfo(),
+            modes=("judge",),
+            concurrency=1,
+        )
+    assert len(bench.read_jsonl(tmp_path / "run/judge.jsonl")) == 3
+
+
+def test_resume_retries_failed_items_and_the_run_reports_them(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+
+    def failing(_url: str, _body: dict | None) -> dict:
+        return {"choices": [{"finish_reason": "length", "message": {"content": "{"}}], "usage": {}}
+
+    args = (items, tmp_path / "run")
+    first = bench.run(*args, _client(failing), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    assert first["failed"] == {"judge": first["n_items"]}
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    second = bench.run(*args, _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    assert second["failed"] == {"judge": 0}
+    cell = bench.score_run(bench.read_items(items), tmp_path / "run", "judge")["clean", "nl"]
+    assert (cell.n, cell.failed) == (2, 0)
+
+
+def test_resume_refuses_a_different_model_or_items(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    run_args = (model_mod.Glossary(), bench.RunInfo())
+    bench.run(items, tmp_path / "run", _client(good), *run_args, modes=("judge",))
+    bench.run(items, tmp_path / "run", _client(good), *run_args, modes=("judge",))  # same run: fine
+    with pytest.raises(ValueError, match="model_name"):
+        bench.run(items, tmp_path / "run", _client(good, "other"), *run_args, modes=("judge",))
+    manifest = json.loads((tmp_path / "run/manifest.json").read_text(encoding="utf-8"))
+    assert manifest["model_name"] == "m"  # not overwritten
+    items.write_bytes(items.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="items_sha256"):
+        bench.run(items, tmp_path / "run", _client(good), *run_args, modes=("judge",))
+
+
+def test_score_refuses_other_items_and_unknown_ids(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    bench.run(items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    loaded = bench.read_items(items)
+    with pytest.raises(ValueError, match="items_sha256"):
+        bench.score_run(loaded, tmp_path / "run", "judge", items_sha="0" * 64)
+    with pytest.raises(ValueError, match="unknown item"):
+        bench.score_run(loaded[:1], tmp_path / "run", "judge")
+
+
+def test_runs_with_the_same_directory_name_get_distinct_columns(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    for parent in ("a", "b"):
+        bench.run(
+            items, tmp_path / parent / "run", _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",)
+        )
+    labels = bench.run_labels([tmp_path / "a/run", tmp_path / "b/run"])
+    assert len(set(labels)) == 2
+
+
+def test_cli_bench_run_exits_nonzero_when_an_answer_failed(
+    tmp_path: Path, catalogs: Cats, monkeypatch: pytest.MonkeyPatch
+):
+    items = _make(tmp_path, catalogs)
+    replies = [{"data": [{"id": "m"}]}, {"version": "1"}]
+
+    def http(_url: str, body: dict | None, _timeout: float) -> dict:
+        if replies:
+            return replies.pop(0)
+        assert body
+        return {"choices": [{"finish_reason": "length", "message": {"content": "{"}}], "usage": {}}
+
+    monkeypatch.setattr(model_mod, "_http", http)
+    argv = ["bench", "run", str(items), "--out", str(tmp_path / "run"), "--base-url", BASE, "--model", "m"]
+    assert main([*argv, "--modes", "judge"]) == 3
+
+
+def test_bench_run_warns_when_the_output_is_not_git_ignored(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)  # noqa: S603, S607
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    bench.warn_if_not_ignored(tmp_path / "ignored" / "run")
+    assert capsys.readouterr().err == ""
+    bench.warn_if_not_ignored(tmp_path / "tracked" / "run")
+    assert "not ignored by git" in capsys.readouterr().err

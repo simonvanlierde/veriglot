@@ -307,13 +307,18 @@ def _bench(args: argparse.Namespace) -> int:
         glossary = model_mod.Glossary.load(args.glossary) if args.glossary else model_mod.Glossary()
         client = _client(args)
         info = bench_mod.RunInfo(args.model_repo, args.revision, args.quantisation, args.image, args.server_flags)
+        bench_mod.warn_if_not_ignored(args.out)
         manifest = bench_mod.run(
             args.items, args.out, client, glossary, info, modes=modes, concurrency=args.concurrency
         )
         print(json.dumps(manifest, indent=2))
+        if failed := sum(manifest["failed"].values()):
+            print(f"error: {failed} answers failed the schema twice; rerun to retry them", file=sys.stderr)
+            return 3
         return 0
     items = bench_mod.read_items(args.items)
-    print(bench_mod.table(items, {p.name: p for p in args.runs}, args.locale))
+    runs = dict(zip(bench_mod.run_labels(args.runs), args.runs, strict=True))
+    print(bench_mod.table(items, runs, args.locale, bench_mod.sha256_file(args.items)))
     return 0
 
 

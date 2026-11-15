@@ -39,6 +39,13 @@ class Kind(StrEnum):
     WHITESPACE = "whitespace"
     TAG = "tag"
     FUZZY = "fuzzy"
+    # Kinds only a model review reports; the deterministic checks never produce them.
+    MEANING = "meaning"
+    OMISSION = "omission"
+    ADDITION = "addition"
+    TERMINOLOGY = "terminology"
+    REGISTER = "register"
+    GRAMMAR = "grammar"
 
 
 class Severity(StrEnum):

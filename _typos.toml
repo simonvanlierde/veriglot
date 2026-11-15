@@ -1,6 +1,7 @@
 # Catalog fixtures are translations, not English.
 [files]
-extend-exclude = ["tests/fixtures/"]
+# bench.py and its tests hold Dutch, German and French word lists.
+extend-exclude = ["tests/fixtures/", "src/veriglot/bench.py", "tests/test_bench.py", "tests/test_model.py"]
 
 [default.extend-words]
 Christiaan = "Christiaan"

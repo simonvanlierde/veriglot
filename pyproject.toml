@@ -7,7 +7,10 @@ requires-python = ">=3.14"
 authors = [{ name = "Simon van Lierde", email = "code@duinlab.nl" }]
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["babel>=2.18"]
+dependencies = [
+    "babel>=2.18",
+    "pydantic>=2.14.3",
+]
 # PyPI rejects unknown classifiers, so this one blocks an accidental upload.
 # Delete it (and set publish_to_pypi) to publish.
 classifiers = ["Private :: Do Not Upload"]

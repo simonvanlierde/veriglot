@@ -24,7 +24,7 @@ def test_seeded_defects_are_found():
         ("removedKey", Kind.EXTRA),
         ("cancel", Kind.UNTRANSLATED),
         ("annContributorRestored", Kind.PLACEHOLDER),
-        ("importedContributors", Kind.PLURAL),
+        ("importedContributors", Kind.SYNTAX),
         ("normsPosition", Kind.PLURAL),
         ("errImportNoXmlContribs", Kind.TAG),
         ("sampleNames", Kind.WHITESPACE),
@@ -83,7 +83,7 @@ def test_plural_categories_follow_cldr():
 def test_select_branches_compared_with_source():
     source = "{p, select, single {Sole} first {First} other {Last}}"
     assert kinds("nl", source, "{p, select, single {Enige} other {Laatste}}") == {(Kind.PLURAL, Severity.WARNING)}
-    assert kinds("nl", source, "{p, select, single {Enige} first {Eerste}}") == {(Kind.PLURAL, Severity.ERROR)}
+    assert kinds("nl", source, "{p, select, single {Enige} first {Eerste}}") == {(Kind.SYNTAX, Severity.ERROR)}
 
 
 @pytest.mark.parametrize(
@@ -112,11 +112,89 @@ def test_untranslated_ignores_text_without_letters():
     assert kinds("nl", "Cancel", "Cancel") == {(Kind.UNTRANSLATED, Severity.INFO)}
 
 
-def test_empty_translation_is_missing():
-    assert kinds("nl", "Cancel", "") == {(Kind.MISSING, Severity.ERROR)}
+@pytest.mark.parametrize("target", ["", " ", "\n\t"])
+def test_empty_or_blank_translation_is_missing(target: str):
+    assert kinds("nl", "Cancel", target) == {(Kind.MISSING, Severity.ERROR)}
+    assert kinds("nl", " ", target or " ") == set()
 
 
 def test_source_syntax_error_is_reported():
     (f,) = check_entry("nl", "k", "{broken", "{broken")
     assert f.kind is Kind.SYNTAX
     assert "source" in f.message
+
+
+@pytest.mark.parametrize("key", ["=abc", "=inf", "=nan", "=1e3", "=1.5", "=99999999999999999999999e999"])
+def test_non_integer_exact_keys_are_syntax_errors(key: str):
+    source = "{n, plural, one {# item} other {# items}}"
+    assert kinds("fr", source, f"{{n, plural, {key} {{x}} other {{y}}}}") == {(Kind.SYNTAX, Severity.ERROR)}
+
+
+@pytest.mark.parametrize(
+    "target", ["{n, plural}", "{n, select}", "{n, foo, bar}", "{n, select, a {x}}", "{n, plural, one {#}}"]
+)
+def test_branchless_unknown_or_otherless_arguments_are_syntax_errors(target: str):
+    assert (Kind.SYNTAX, Severity.ERROR) in kinds("ja", "{n}", target)
+
+
+def test_dropped_hash_or_branch_placeholder_warns():
+    source = "{n, plural, one {# item} other {{name} has # items}}"
+    dropped_hash = "{n, plural, one {un élément} other {{name} a # éléments}}"
+    assert kinds("fr", source, dropped_hash) == {(Kind.PLACEHOLDER, Severity.WARNING)}
+    dropped_name = "{n, plural, one {{name} a # élément} other {# éléments}}"
+    assert kinds("fr", source, dropped_name) == {(Kind.PLACEHOLDER, Severity.WARNING)}
+    # {n} in place of #, and an exact branch without a number where the source has none either.
+    exact = "{n, plural, =0 {Geen} one {{n} item} other {{name} heeft {n} items}}"
+    assert kinds("nl", "{n, plural, =0 {None} one {# item} other {{name} has # items}}", exact) == set()
+    # A name missing from every branch is still an error.
+    assert (Kind.PLACEHOLDER, Severity.ERROR) in kinds("fr", source, "{n, plural, one {#} other {#}}")
+
+
+@pytest.mark.parametrize(
+    ("locale", "target"),
+    [
+        ("ja", "{n, plural, other {<b>#</b> 件}}"),
+        ("fr", "{n, plural, one {<b>#</b> élément} many {<b>#</b> d'éléments} other {<b>#</b> éléments}}"),
+        ("ru", "{n, plural, one {<b>#</b>} few {<b>#</b>} many {<b>#</b>} other {<b>#</b>}}"),
+        ("ja", "<b>{n}</b> 件"),
+    ],
+)
+def test_tags_are_compared_per_branch(locale: str, target: str):
+    source = "{n, plural, one {<b>#</b> item} other {<b>#</b> items}}"
+    assert kinds(locale, source, target) == set()
+
+
+def test_tag_dropped_in_one_branch_is_an_error():
+    source = "<i>{n, plural, one {<b>#</b> item} other {<b>#</b> items}}</i>"
+    assert kinds("fr", source, "<i>{n, plural, one {<b>#</b> élément} other {# éléments}}</i>") == {
+        (Kind.TAG, Severity.ERROR)
+    }
+    assert kinds("fr", source, "{n, plural, one {<b>#</b> élément} other {<b>#</b> éléments}}") == {
+        (Kind.TAG, Severity.ERROR)
+    }
+
+
+def test_offset_shifts_exact_keys_before_category_coverage():
+    source = "{n, plural, offset:1 =0 {Nobody} =1 {You} one {You and # other} other {You and # others}}"
+    # With offset 1, "one" selects n = 2, which neither =0 nor =1 covers.
+    lacks_one = "{n, plural, offset:1 =0 {Niemand} =1 {Jij} other {Jij en # anderen}}"
+    assert kinds("nl", source, lacks_one) == {(Kind.PLURAL, Severity.WARNING)}
+    covered = "{n, plural, offset:1 =0 {Niemand} =1 {Jij} =2 {Jij en één ander} other {Jij en # anderen}}"
+    assert kinds("nl", source, covered) == set()
+
+
+def test_fuzzy_entries_get_an_info_finding(tmp_path: Path):
+    path = tmp_path / "messages.po"
+    path.write_text(
+        'msgid ""\nmsgstr ""\n"Language: nl\\n"\n\n#, fuzzy\nmsgid "cancel"\nmsgstr "Annuleren"\n', encoding="utf-8"
+    )
+    source = replace(load_catalog(SOURCE), entries={"cancel": load_catalog(SOURCE).entries["cancel"]})
+    (f,) = check_catalogs(source, load_catalog(path))
+    assert (f.kind, f.severity, f.proposed) == (Kind.FUZZY, Severity.INFO, None)
+
+
+def test_whitespace_proposal_only_when_it_passes_the_checks():
+    (f,) = [f for f in check_entry("nl", "k", "{name} ", "{name}") if f.kind is Kind.WHITESPACE]
+    assert f.proposed == "{name} "
+    (f,) = [f for f in check_entry("nl", "k", "{name} ", "{naam}") if f.kind is Kind.WHITESPACE]
+    assert f.proposed is None

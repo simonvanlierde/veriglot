@@ -10,11 +10,15 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import cache
+from typing import TYPE_CHECKING
 
 from babel import Locale, UnknownLocaleError
 
 from veriglot.catalog import Catalog, is_read_only
-from veriglot.icu import IcuSyntaxError, Shape, parse
+from veriglot.icu import Arg, Branch, IcuSyntaxError, Shape, parse
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Typographic spacing: French puts a space before these.
 _SPACED_PUNCTUATION = frozenset(":;!?»")
@@ -34,6 +38,7 @@ class Kind(StrEnum):
     SYNTAX = "syntax"
     WHITESPACE = "whitespace"
     TAG = "tag"
+    FUZZY = "fuzzy"
 
 
 class Severity(StrEnum):
@@ -86,6 +91,11 @@ def check_catalogs(source: Catalog, target: Catalog, read_only: tuple[str, ...] 
             findings += _finding(target.locale, key, src.text, "", context, Kind.MISSING, Severity.ERROR, ["no entry"])
         else:
             findings += check_entry(target.locale, key, src.text, entry.text, context)
+            if entry.fuzzy:
+                message = ["marked fuzzy: the translation awaits review"]
+                findings += _finding(
+                    target.locale, key, src.text, entry.text, context, Kind.FUZZY, Severity.INFO, message
+                )
     for key, entry in target.entries.items():
         if key not in source.entries:
             context = _context(target, key, read_only)
@@ -107,22 +117,13 @@ def _context(catalog: Catalog, key: str, read_only: tuple[str, ...]) -> str:
 
 def check_entry(locale: str, key: str, source: str, target: str, context: str = "") -> list[Finding]:
     """Check one translation against its source text."""
-    if not target and source:
-        return _finding(locale, key, source, target, context, Kind.MISSING, Severity.ERROR, ["empty translation"])
-    issues: list[tuple[Kind, Severity, str]] = []
-    try:
-        src = parse(source)
-    except IcuSyntaxError as exc:
-        issues.append((Kind.SYNTAX, Severity.ERROR, f"source: {exc}"))
-        src = None
-    try:
-        tgt = parse(target)
-    except IcuSyntaxError as exc:
-        issues.append((Kind.SYNTAX, Severity.ERROR, str(exc)))
-        tgt = None
-    if src and tgt:
-        issues += _compare(locale, source, target, src, tgt)
+    if not target.strip() and source.strip():
+        message = "empty translation" if not target else "translation is only whitespace"
+        return _finding(locale, key, source, target, context, Kind.MISSING, Severity.ERROR, [message])
+    issues = _issues(locale, source, target)
     ws_messages, proposed = _whitespace(source, target)
+    if proposed is not None and any(s is Severity.ERROR for _, s, _ in _issues(locale, source, proposed)):
+        proposed = None  # apply would reject it
     issues += [(Kind.WHITESPACE, Severity.WARNING, m) for m in ws_messages]
     by_kind: dict[Kind, list[tuple[Severity, str]]] = {}
     for kind, severity, message in issues:
@@ -144,18 +145,48 @@ def check_entry(locale: str, key: str, source: str, target: str, context: str = 
     return findings
 
 
-def _compare(locale: str, source: str, target: str, src: Shape, tgt: Shape) -> list[tuple[Kind, Severity, str]]:
-    issues: list[tuple[Kind, Severity, str]] = []
+type Issue = tuple[Kind, Severity, str]
+
+
+def _issues(locale: str, source: str, target: str) -> list[Issue]:
+    """Syntax and structure issues; whitespace is checked separately."""
+    issues: list[Issue] = []
+    try:
+        src = parse(source)
+    except IcuSyntaxError as exc:
+        issues.append((Kind.SYNTAX, Severity.ERROR, f"source: {exc}"))
+        src = None
+    try:
+        tgt = parse(target)
+    except IcuSyntaxError as exc:
+        issues.append((Kind.SYNTAX, Severity.ERROR, str(exc)))
+        tgt = None
+    if src and tgt:
+        issues += _compare(locale, source, target, src, tgt)
+    return issues
+
+
+def _compare(locale: str, source: str, target: str, src: Shape, tgt: Shape) -> list[Issue]:
+    issues: list[Issue] = []
     if target == source and any(c.isalpha() for c in src.text):
         issues.append((Kind.UNTRANSLATED, Severity.INFO, "same as the source text"))
     if missing := sorted(src.names - tgt.names):
         issues.append((Kind.PLACEHOLDER, Severity.ERROR, "missing " + ", ".join(f"{{{n}}}" for n in missing)))
     if unexpected := sorted(tgt.names - src.names):
         issues.append((Kind.PLACEHOLDER, Severity.ERROR, "unexpected " + ", ".join(f"{{{n}}}" for n in unexpected)))
-    issues += [(Kind.PLURAL, severity, message) for severity, message in _branch_issues(locale, src, tgt)]
-    if Counter(src.tags) != Counter(tgt.tags):
-        issues.append((Kind.TAG, Severity.ERROR, _diff("tag", src.tags, tgt.tags)))
+    issues += _branch_issues(locale, src, tgt)
+    # Tags outside branches, plus the 'other' branch of an argument only one side branches on.
+    # shortcut: a branching argument nested in a branch adds its tags at the top level too; track
+    # nesting if catalogs nest tagged plurals.
+    src_tags = list(src.tags) + [t for n, a in src.complex.items() if n not in tgt.complex for t in _other(a).tags]
+    tgt_tags = list(tgt.tags) + [t for n, a in tgt.complex.items() if n not in src.complex for t in _other(a).tags]
+    if Counter(src_tags) != Counter(tgt_tags):
+        issues.append((Kind.TAG, Severity.ERROR, _diff("tag", src_tags, tgt_tags)))
     return issues
+
+
+def _other(arg: Arg) -> Branch:
+    return arg.branches["other"]  # the parser requires it
 
 
 def _finding(
@@ -186,7 +217,7 @@ def _finding(
     ]
 
 
-def _diff(what: str, source: tuple[str, ...], target: tuple[str, ...]) -> str:
+def _diff(what: str, source: Iterable[str], target: Iterable[str]) -> str:
     missing = Counter(source) - Counter(target)
     extra = Counter(target) - Counter(source)
     parts = [f"missing {what} {t}" for t in sorted(missing.elements())]
@@ -208,42 +239,69 @@ def _categories(locale: str, kind: str) -> dict[str, frozenset[int]] | None:
     return {tag: frozenset(ns) for tag, ns in samples.items()}
 
 
-def _branch_issues(locale: str, src: Shape, tgt: Shape) -> list[tuple[Severity, str]]:
-    issues: list[tuple[Severity, str]] = []
+def _branch_issues(locale: str, src: Shape, tgt: Shape) -> list[Issue]:
+    issues: list[Issue] = []
     for name in sorted(src.names & tgt.names):
         s, t = src.complex.get(name), tgt.complex.get(name)
         if s is None:
             continue  # a target may add plural or select branches where the source has none
         if t is None:
-            cats = _categories(locale, s[0])
+            cats = _categories(locale, s.kind)
             # Japanese and Chinese have only "other", so a plain {count} is complete there.
-            if not (s[0] != "select" and cats is not None and set(cats) == {"other"}):
-                issues.append((Severity.ERROR, f"{{{name}}} has no {s[0]} branches"))
+            if not (s.kind != "select" and cats is not None and set(cats) == {"other"}):
+                issues.append((Kind.PLURAL, Severity.ERROR, f"{{{name}}} has no {s.kind} branches"))
             continue
-        if s[0] != t[0]:
-            issues.append((Severity.ERROR, f"{{{name}}} is {t[0]} in the target, {s[0]} in the source"))
+        if s.kind != t.kind:
+            issues.append(
+                (Kind.PLURAL, Severity.ERROR, f"{{{name}}} is {t.kind} in the target, {s.kind} in the source")
+            )
             continue
-        keys = t[1]
-        if "other" not in keys:
-            issues.append((Severity.ERROR, f"{{{name}}} has no 'other' branch"))
-        if t[0] == "select":
-            if missing := sorted(s[1] - keys - {"other"}):
-                issues.append((Severity.WARNING, f"{{{name}}} lacks select branches {', '.join(missing)}"))
-            if extra := sorted(keys - s[1]):
-                issues.append(
-                    (Severity.WARNING, f"{{{name}}} has select branches not in the source: {', '.join(extra)}")
-                )
+        issues += _per_branch(locale, name, s, t)
+        keys = frozenset(t.branches)
+        if t.kind == "select":
+            if missing := sorted(set(s.branches) - keys - {"other"}):
+                issues.append((Kind.PLURAL, Severity.WARNING, f"{{{name}}} lacks select branches {', '.join(missing)}"))
+            if extra := sorted(keys - set(s.branches)):
+                message = f"{{{name}}} has select branches not in the source: {', '.join(extra)}"
+                issues.append((Kind.PLURAL, Severity.WARNING, message))
             continue
-        issues += _category_issues(locale, name, t[0], keys)
+        issues += [(Kind.PLURAL, sev, m) for sev, m in _category_issues(locale, name, t)]
     return issues
 
 
-def _category_issues(locale: str, name: str, kind: str, keys: frozenset[str]) -> list[tuple[Severity, str]]:
-    cats = _categories(locale, kind)
+def _per_branch(locale: str, name: str, s: Arg, t: Arg) -> list[Issue]:
+    """Compare each target branch with the source branch of the same key, else source 'other'.
+
+    Branch counts differ by locale, so names, ``#`` and tags are compared branch by branch
+    rather than summed over all branches.
+    """
+    issues: list[Issue] = []
+    counted = s.kind != "select"
+    cats = _categories(locale, s.kind) if counted else None
+    for key, tb in t.branches.items():
+        sb = s.branches.get(key, _other(s))
+        where = f"{{{name}}} branch {key!r}"
+        # A branch for one number (=0, or Dutch "one") may spell it out.
+        single = key.startswith("=") or (cats is not None and len(cats.get(key, ())) == 1)
+        # In a plural, {n} and # both show the number, so they stand in for each other.
+        if counted and not single and (sb.hash or name in sb.names) and not (tb.hash or name in tb.names):
+            issues.append((Kind.PLACEHOLDER, Severity.WARNING, f"{where} shows neither # nor {{{name}}}"))
+        if lacking := sorted(sb.names - tb.names - ({name} if counted else set())):
+            issues.append(
+                (Kind.PLACEHOLDER, Severity.WARNING, f"{where} lacks " + ", ".join(f"{{{n}}}" for n in lacking))
+            )
+        if Counter(sb.tags) != Counter(tb.tags):
+            issues.append((Kind.TAG, Severity.ERROR, f"{where}: " + _diff("tag", sb.tags, tb.tags)))
+    return issues
+
+
+def _category_issues(locale: str, name: str, arg: Arg) -> list[tuple[Severity, str]]:
+    cats = _categories(locale, arg.kind)
     if cats is None:
         return [(Severity.WARNING, f"no CLDR plural rules for locale {locale!r}")]
-    exact = {int(float(k[1:])) for k in keys if k.startswith("=")}
-    named = {k for k in keys if not k.startswith("=")}
+    # Exact keys match the number itself; categories match the number minus the offset.
+    exact = {int(k[1:]) - arg.offset for k in arg.branches if k.startswith("=")}
+    named = {k for k in arg.branches if not k.startswith("=")}
     issues: list[tuple[Severity, str]] = []
     if unknown := sorted(named - set(cats)):
         issues.append((Severity.WARNING, f"{{{name}}} has categories {locale} never selects: {', '.join(unknown)}"))

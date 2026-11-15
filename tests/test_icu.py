@@ -16,14 +16,16 @@ def test_simple_arguments_and_text():
 
 def test_plural_with_hash_and_exact_keys():
     shape = parse("{count, plural, =0 {No contributors} one {# contributor} other {# contributors}}")
-    assert shape.complex == {"count": ("plural", frozenset({"=0", "one", "other"}))}
+    assert shape.complex["count"].kind == "plural"
+    assert set(shape.complex["count"].branches) == {"=0", "one", "other"}
     assert shape.simple == frozenset()
 
 
 def test_nested_select_keeps_inner_arguments():
     shape = parse("{copied, select, true {Copied. Ask {name} about this: {role}} other {Ask {name}: {role}}}")
     assert shape.names == {"copied", "name", "role"}
-    assert shape.complex["copied"] == ("select", frozenset({"true", "other"}))
+    assert shape.complex["copied"].kind == "select"
+    assert set(shape.complex["copied"].branches) == {"true", "other"}
 
 
 def test_offset_and_typed_argument_with_style():
@@ -59,6 +61,20 @@ def test_tags_are_kept_not_parsed():
         "{count, plural, }",
         "{count, plural one {a}}",
         "{n, plural, offset: other {a}}",
+        "{n, plural}",
+        "{n, select}",
+        "{n, selectordinal }",
+        "{n, foo, bar}",
+        "{n, foo}",
+        "{n, plural, one {a}}",
+        "{n, select, a {x}}",
+        "{n, selectordinal, one {#st}}",
+        "{n, plural, =abc {x} other {y}}",
+        "{n, plural, =inf {x} other {y}}",
+        "{n, plural, =nan {x} other {y}}",
+        "{n, plural, =1e3 {x} other {y}}",
+        "{n, plural, =1.5 {x} other {y}}",
+        "{n, plural, =-1 {x} other {y}}",
     ],
 )
 def test_syntax_errors(message: str):
@@ -84,3 +100,26 @@ def test_quoted_text_round_trips(text: str):
 def test_only_syntax_errors_escape(text: str):
     with contextlib.suppress(IcuSyntaxError):
         parse(text)
+
+
+@pytest.mark.parametrize("message", ["{d, date, short}", "{n, number, ::currency/EUR}", "{n, spellout}", "{t, time}"])
+def test_simple_types_with_and_without_style(message: str):
+    assert parse(message).simple == {message[1]}
+
+
+def test_branches_record_names_hash_tags_and_offset():
+    shape = parse("<b>{n, plural, offset:1 =0 {<i>none</i>} other {{name} and # <0>more</0>}}</b>")
+    arg = shape.complex["n"]
+    assert (arg.kind, arg.offset) == ("plural", 1)
+    zero, other = arg.branches["=0"], arg.branches["other"]
+    assert (zero.names, zero.hash, zero.tags) == (frozenset(), False, ("</i>", "<i>"))
+    assert (other.names, other.hash, other.tags) == (frozenset({"name"}), True, ("</0>", "<0>"))
+    assert shape.tags == ("</b>", "<b>")
+    assert shape.names == {"n", "name"}
+
+
+def test_hash_in_select_nested_in_plural_is_literal():
+    shape = parse("{n, plural, other {{g, select, other {# x}}}}")
+    assert shape.text == "# x"
+    assert not shape.complex["n"].branches["other"].hash
+    assert parse("{n, plural, other {{g, select, other {'#'x}}}}").text == "'#'x"

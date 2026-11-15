@@ -127,7 +127,8 @@ def _apply(args: argparse.Namespace) -> int:
     source = load_catalog(args.source)
     target = load_catalog(args.target)
     if args.decisions == "-":
-        rows = read_decisions(sys.stdin)
+        # Spreadsheets save CSV with a byte order mark and CRLF; read stdin like a file.
+        rows = read_decisions(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8-sig", newline=""))
     else:
         with Path(args.decisions).open(newline="", encoding="utf-8-sig") as f:
             rows = read_decisions(f)

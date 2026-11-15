@@ -1,15 +1,18 @@
+import codecs
 import csv
 import io
 import json
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from veriglot.cli import main
-from veriglot.csvio import COLUMNS
+from veriglot.csvio import COLUMNS, read_decisions, write_findings
+from veriglot.review import check_entry
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EN = str(FIXTURES / "credit-matrix/en/messages.po")
@@ -103,3 +106,47 @@ def test_console_script():
     )
     assert result.returncode == 0
     assert result.stdout.startswith("veriglot ")
+
+
+def test_bom_catalog_header_does_not_hide_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    target = tmp_path / "messages.po"
+    target.write_bytes(codecs.BOM_UTF8 + Path(BROKEN).read_bytes())
+    assert main(["check", EN, str(target), "--format", "json"]) == 1
+    found = {(f["key"], f["kind"]) for f in json.loads(capsys.readouterr().out)["findings"]}
+    assert ("annContributorRestored", "placeholder") in found
+
+
+def test_malformed_catalog_exits_three(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    target = tmp_path / "messages.po"
+    target.write_text('msgid ""\nmsgstr ""\n"Language: nl\\n"\n\nmsgid "cancel"\nmsgstr "Annuleren\n', encoding="utf-8")
+    assert main(["check", EN, str(target)]) == 3
+    assert f"{target}:6:" in capsys.readouterr().err
+
+
+def test_apply_reads_bom_csv_from_stdin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "messages.po"
+    shutil.copy(BROKEN, target)
+    sheet = "id,fingerprint,decision,edited\r\nnl:cancel:untranslated,x,reject,\r\n"
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(codecs.BOM_UTF8 + sheet.encode())))
+    assert main(["apply", str(target), "-", "--source", EN]) == 0
+
+
+def test_formula_cells_are_neutralised_and_round_trip():
+    texts = ["=HYPERLINK(1)", "+1", "-x", "@sum", "\tx", "\rx", "'=x", "''+x", "'s-Hertogenbosch", "plain"]
+    findings = [check_entry("nl", f"k{i}", "Cancel", "Cancel")[0] for i in range(len(texts))]
+    findings = [replace(f, target=t, message=t, proposed=t) for f, t in zip(findings, texts, strict=True)]
+    out = io.StringIO()
+    write_findings(findings, out)
+    rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+    assert [r["target"] for r in rows[:3]] == ["'=HYPERLINK(1)", "'+1", "'-x"]
+    assert rows[6]["target"] == "''=x"
+    assert rows[8]["target"] == "'s-Hertogenbosch"
+    for r in rows:
+        r["decision"], r["edited"] = "edit", r["target"]
+    back = io.StringIO()
+    writer = csv.DictWriter(back, COLUMNS)
+    writer.writeheader()
+    writer.writerows(rows)
+    decisions = read_decisions(io.StringIO(back.getvalue()))
+    assert [d.edited for d in decisions] == texts
+    assert [d.proposed for d in decisions] == texts

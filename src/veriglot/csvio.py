@@ -1,6 +1,14 @@
-"""The reviewer CSV: findings out, decisions back in. A thin layer over review and apply."""
+"""The reviewer CSV: findings out, decisions back in. A thin layer over review and apply.
+
+Text cells (``source``, ``target``, ``proposed``, ``edited``, ``context``, ``message``,
+``note``) that a spreadsheet would run as a formula, those starting with ``=``, ``+``,
+``-``, ``@``, a tab or a carriage return, get one leading ``'``. So do cells that start
+with apostrophes followed by one of those characters, which keeps the escape reversible:
+reading strips exactly that one ``'``. Sensebank's review CSV follows the same rule.
+"""
 
 import csv
+import re
 from typing import TYPE_CHECKING, TextIO
 
 from veriglot.apply import DecisionRow
@@ -28,6 +36,18 @@ COLUMNS = (
     "note",
 )
 _REQUIRED = ("id", "fingerprint", "decision")
+_TEXT = frozenset({"source", "target", "proposed", "edited", "context", "message", "note"})
+_FORMULA = re.compile(r"'*[=+\-@\t\r]")
+
+
+def escape_cell(text: str) -> str:
+    """Neutralise a text cell a spreadsheet would run as a formula (see the module docstring)."""
+    return "'" + text if _FORMULA.match(text) else text
+
+
+def unescape_cell(text: str) -> str:
+    """Undo ``escape_cell``."""
+    return text[1:] if text.startswith("'") and _FORMULA.match(text, 1) else text
 
 
 def write_findings(findings: Iterable[Finding], stream: TextIO) -> None:
@@ -36,7 +56,7 @@ def write_findings(findings: Iterable[Finding], stream: TextIO) -> None:
     writer = csv.DictWriter(stream, COLUMNS, quoting=csv.QUOTE_ALL, lineterminator="\n")
     writer.writeheader()
     for finding in findings:
-        row = {k: v or "" for k, v in finding.to_dict().items()}
+        row = {k: escape_cell(v or "") if k in _TEXT else v or "" for k, v in finding.to_dict().items()}
         writer.writerow({**row, "decision": "", "edited": "", "note": ""})
 
 
@@ -55,9 +75,9 @@ def read_decisions(stream: TextIO) -> list[DecisionRow]:
             id=row["id"],
             fingerprint=row["fingerprint"],
             decision=row["decision"] or "",
-            proposed=row.get("proposed") or None,
-            edited=row.get("edited") or None,
-            note=row.get("note") or "",
+            proposed=unescape_cell(row.get("proposed") or "") or None,
+            edited=unescape_cell(row.get("edited") or "") or None,
+            note=unescape_cell(row.get("note") or ""),
         )
         for row in reader
     ]

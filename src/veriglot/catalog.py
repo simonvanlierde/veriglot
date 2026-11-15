@@ -1,22 +1,24 @@
 """Read message catalogs and write changed translations back without reformatting them."""
 
+import codecs
 import io
 import json
+import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING
+from pathlib import Path
 
-from babel.messages.pofile import escape, read_po
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from babel.messages.pofile import PoFileError, escape, read_po, unescape
 
 # CRediT role names and descriptions are vendored from the credit-translation project;
 # fixes go upstream, so they are never written here.
 VENDORED_KEYS = ("https://credit.niso.org/contributor-roles/*",)
 
 _LANGUAGE = re.compile(r'^"Language: *([^\\"]+?) *\\n"', re.MULTILINE)
+_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
 class CatalogChangedError(RuntimeError):
@@ -33,6 +35,8 @@ class Entry:
     """The ``msgctxt`` and comments, if any."""
     line: int
     """1-based line of the ``msgid``; 0 for formats without lines."""
+    fuzzy: bool = False
+    """Marked ``#, fuzzy``: a draft awaiting review."""
 
 
 @dataclass(frozen=True)
@@ -43,7 +47,7 @@ class Catalog:
     locale: str
     entries: dict[str, Entry]
     raw: bytes
-    """The file as read, so a write can check nothing changed since."""
+    """The file as read, byte order mark included, so a write can check nothing changed since."""
 
 
 def is_read_only(key: str, patterns: tuple[str, ...]) -> bool:
@@ -55,11 +59,12 @@ def load_catalog(path: Path) -> Catalog:
     """Load a Lingui/gettext ``.po`` catalog or a flat JSON catalog (``{"key": "text"}``).
 
     The locale comes from the ``.po`` ``Language`` header, else the folder name; for JSON
-    it is the file name (``nl.json``).
+    it is the file name (``nl.json``). A UTF-8 byte order mark is allowed.
 
     Raises:
         OSError: the file cannot be read.
-        ValueError: the file is not a catalog this module reads.
+        ValueError: the file is not a catalog this module reads, or a ``.po`` line is malformed
+            (the message names the line).
     """
     raw = path.read_bytes()
     if path.suffix == ".json":
@@ -67,11 +72,18 @@ def load_catalog(path: Path) -> Catalog:
     if path.suffix != ".po":
         msg = f"{path}: unsupported catalog format {path.suffix!r} (expected .po or .json)"
         raise ValueError(msg)
-    text = raw.decode("utf-8")
+    text = raw.decode("utf-8-sig")
+    _check_strings(path, text)
     header = _LANGUAGE.search(text)
     locale = header.group(1) if header else path.parent.name
+    try:
+        # StringIO splits lines on "\n" only, so Babel's line numbers count "\n" only too.
+        messages = read_po(io.StringIO(text), abort_invalid=True)
+    except PoFileError as exc:
+        msg = f"{path}:{exc.lineno + 1}: {str(exc).rpartition(' on ')[0]}: {exc.line!r}"
+        raise ValueError(msg) from exc
     entries: dict[str, Entry] = {}
-    for message in read_po(io.StringIO(text)):
+    for message in messages:
         if not message.id:
             continue  # the header
         if not isinstance(message.id, str):
@@ -83,8 +95,56 @@ def load_catalog(path: Path) -> Catalog:
             raise ValueError(msg)
         notes = [f"msgctxt: {message.context}"] if message.context else []
         notes += [*message.auto_comments, *message.user_comments]
-        entries[message.id] = Entry(message.id, str(message.string), "; ".join(notes), message.lineno or 0)
+        entries[message.id] = Entry(
+            message.id, str(message.string), "; ".join(notes), message.lineno or 0, fuzzy=message.fuzzy
+        )
     return Catalog(path, locale, entries, raw)
+
+
+def _check_strings(path: Path, text: str) -> None:
+    """Refuse unterminated or trailing-garbage strings, which Babel reads without complaint."""
+    for number, line in enumerate(text.split("\n"), 1):
+        stripped = line.strip()  # as Babel strips each line
+        if not stripped or stripped.startswith("#"):
+            continue
+        string = stripped if stripped.startswith('"') else stripped.partition(" ")[2].strip()
+        if not _STRING.fullmatch(string):
+            msg = f"{path}:{number}: malformed string: {line!r}"
+            raise ValueError(msg)
+
+
+def _lines(text: str) -> list[str]:
+    r"""Split on "\n" only, keeping it: Babel's line numbers ignore U+2028 and other breaks."""
+    parts = text.split("\n")
+    return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def _block_end(lines: list[str], i: int) -> int:
+    """The index after the keyword line at ``i`` and its continuation lines."""
+    end = i + 1
+    while end < len(lines) and lines[end].lstrip().startswith('"'):
+        end += 1
+    return end
+
+
+def _string(lines: list[str]) -> str:
+    """The text of a keyword line and its continuation lines."""
+    first = lines[0].strip().partition(" ")[2].strip()
+    return "".join(unescape(s) for s in (first, *(line.strip() for line in lines[1:])))
+
+
+def _clear_fuzzy(lines: list[str], msgid: int) -> None:
+    """Drop ``fuzzy`` from the ``#,`` line of the entry whose ``msgid`` line is at ``msgid``."""
+    k = msgid - 1
+    while k >= 0 and (s := lines[k].strip()) and not s.startswith("#~") and (s[0] in '#"' or s.startswith("msgctxt")):
+        if s.startswith("#,"):
+            flags = [f.strip() for f in s[2:].split(",")]
+            if "fuzzy" in flags:
+                rest = [f for f in flags if f != "fuzzy"]
+                ending = lines[k][len(lines[k].rstrip("\r\n")) :]
+                lines[k : k + 1] = [f"#, {', '.join(rest)}{ending}"] if rest else []
+            return
+        k -= 1
 
 
 def _load_json(path: Path, raw: bytes) -> Catalog:
@@ -98,28 +158,45 @@ def _load_json(path: Path, raw: bytes) -> Catalog:
 def write_texts(catalog: Catalog, texts: dict[str, str]) -> None:
     """Replace the ``msgstr`` of each key in ``texts`` and leave every other byte alone.
 
-    The new text is written as one ``msgstr "..."`` line, as Lingui writes them.
+    The new text is written as one ``msgstr "..."`` line, as Lingui writes them, and a
+    ``fuzzy`` flag on that entry is dropped: the text has been reviewed. The file is
+    replaced atomically.
 
     Raises:
         CatalogChangedError: the file changed since ``catalog`` was read.
-        ValueError: the catalog is not a ``.po`` file.
+        ValueError: the catalog is not a ``.po`` file, or an entry's line does not hold its msgid.
     """
     if catalog.path.suffix != ".po":
         msg = f"{catalog.path}: only .po catalogs can be written"
         raise ValueError(msg)
-    lines = catalog.raw.decode("utf-8").splitlines(keepends=True)
+    bom = codecs.BOM_UTF8 if catalog.raw.startswith(codecs.BOM_UTF8) else b""
+    lines = _lines(catalog.raw.decode("utf-8-sig"))
     # Replace from the bottom up so earlier line numbers stay valid.
     for key in sorted(texts, key=lambda k: catalog.entries[k].line, reverse=True):
-        start = catalog.entries[key].line
-        i = start - 1
-        while not lines[i].startswith("msgstr"):
-            i += 1
-        end = i + 1
-        while end < len(lines) and lines[end].lstrip().startswith('"'):
-            end += 1
-        newline = lines[end - 1][len(lines[end - 1].rstrip("\r\n")) :]
-        lines[i:end] = [f"msgstr {escape(texts[key])}{newline}"]
+        line = catalog.entries[key].line
+        i = line - 1
+        end = _block_end(lines, i) if 0 <= i < len(lines) else i
+        # msgids are unique in a loaded catalog (load_catalog refuses duplicates), so the msgid
+        # alone identifies the block, msgctxt or not.
+        if not (0 <= i < len(lines) and lines[i].lstrip().startswith("msgid ") and _string(lines[i:end]) == key):
+            msg = f"{catalog.path}:{line}: expected msgid {key!r} here; check the catalog again before applying"
+            raise ValueError(msg)
+        if end >= len(lines) or not lines[end].lstrip().startswith("msgstr "):
+            msg = f"{catalog.path}:{end + 1}: expected the msgstr of {key!r}"
+            raise ValueError(msg)
+        stop = _block_end(lines, end)
+        newline = lines[stop - 1][len(lines[stop - 1].rstrip("\r\n")) :]
+        lines[end:stop] = [f"msgstr {escape(texts[key])}{newline}"]
+        _clear_fuzzy(lines, i)
     if catalog.path.read_bytes() != catalog.raw:
         msg = f"{catalog.path} changed since it was read; check it again before applying"
         raise CatalogChangedError(msg)
-    catalog.path.write_bytes("".join(lines).encode("utf-8"))
+    fd, tmp = tempfile.mkstemp(dir=catalog.path.parent, prefix=f".{catalog.path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(bom + "".join(lines).encode("utf-8"))
+        shutil.copymode(catalog.path, tmp)
+        Path(tmp).replace(catalog.path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

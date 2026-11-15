@@ -65,7 +65,7 @@ def test_accept_edit_and_every_rejection_are_accounted(target: Path):
         ("annContributorRestored:placeholder", "rejected", "invalid"),
         ("sampleNames:whitespace", "rejected", "stale"),
         ("noSuchKey:missing", "rejected", "unknown"),
-        ("cancel:untranslated", "rejected", "unknown"),
+        ("cancel:untranslated", "skipped", "other locale"),
         (f"{ROLE}:untranslated", "rejected", "read-only"),
         ("errImportNoXmlContribs:tag", "skipped", "declined"),
         ("output.levelAnnotation:syntax", "skipped", "undecided"),
@@ -79,13 +79,19 @@ def test_accept_edit_and_every_rejection_are_accounted(target: Path):
     assert check_catalogs(SOURCE, load_catalog(target))  # other defects remain
 
 
-def test_second_decision_on_same_entry_is_stale(target: Path):
+def test_second_decision_on_same_entry_is_resolved_or_stale(target: Path):
     rows = [
         row("cancel", "untranslated", "Cancel", "Cancel", "edit", edited="Annuleren"),
         row("cancel", "untranslated", "Cancel", "Cancel", "edit", edited="Afbreken"),
+        row("output.labelSeparator", "whitespace", ": ", ":", "edit", edited=": \n"),
+        row("output.labelSeparator", "whitespace", ": ", ":", "accept", proposed=": "),
     ]
     report = apply_decisions(SOURCE, load_catalog(target), rows)
-    assert [o.reason for o in report.outcomes] == ["", "stale"]
+    assert statuses(report)[1:] == [
+        ("cancel:untranslated", "skipped", "resolved"),
+        ("output.labelSeparator:whitespace", "applied", ""),
+        ("output.labelSeparator:whitespace", "rejected", "stale"),
+    ]
 
 
 def test_rerun_after_apply_reports_already_applied(target: Path):
@@ -113,3 +119,53 @@ def test_json_catalogs_are_check_only(tmp_path: Path):
     rows = [row("cancel", "untranslated", "Cancel", "Cancel", "edit", edited="Annuleren")]
     report = apply_decisions(load_catalog(source), load_catalog(path), rows)
     assert statuses(report) == [("cancel:untranslated", "rejected", "unsupported")]
+
+
+def test_other_locale_rows_skip_and_unknown_kind_is_named(target: Path):
+    rows = [
+        DecisionRow(id="de:cancel:untranslated", fingerprint="", decision="edit", edited="Abbrechen"),
+        DecisionRow(id="de:noSuchKey:typo", fingerprint="", decision="maybe"),
+        DecisionRow(id="nl:cancel:typo", fingerprint="", decision="edit", edited="x"),
+        DecisionRow(id="nl-cancel", fingerprint="", decision="edit", edited="x"),
+        row("cancel", "untranslated", "Cancel", "Cancel", "edit", edited="Annuleren"),
+    ]
+    report = apply_decisions(SOURCE, load_catalog(target), rows)
+    assert [(o.status, o.reason) for o in report.outcomes] == [
+        ("skipped", "other locale"),
+        ("skipped", "other locale"),
+        ("rejected", "unknown"),
+        ("rejected", "unknown"),
+        ("applied", ""),
+    ]
+    assert report.outcomes[2].detail == "unknown kind 'typo'"
+    assert "malformed id" in report.outcomes[3].detail
+
+
+def test_changed_catalog_rejects_every_row(target: Path):
+    catalog = load_catalog(target)
+    target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    rows = [
+        row("cancel", "untranslated", "Cancel", "Cancel", "edit", edited="Annuleren"),
+        row("errImportNoXmlContribs", "tag", "", "", "reject"),
+    ]
+    report = apply_decisions(SOURCE, catalog, rows)
+    assert [(o.status, o.reason) for o in report.outcomes] == [("rejected", "catalog changed")] * 2
+    assert not report.written
+
+
+def test_apply_clears_fuzzy_and_says_so(tmp_path: Path):
+    path = tmp_path / "messages.po"
+    path.write_text(
+        'msgid ""\nmsgstr ""\n"Language: nl\\n"\n\n#, fuzzy\nmsgid "cancel"\nmsgstr "Annuleren"\n\n'
+        '#, fuzzy\nmsgid "stepContributors"\nmsgstr "Bijdrage"\n',
+        encoding="utf-8",
+    )
+    rows = [
+        row("cancel", "fuzzy", "Cancel", "Annuleren", "edit", edited="Annuleren"),
+        row("stepContributors", "fuzzy", "Contributors", "Bijdrage", "edit", edited="Bijdragers"),
+    ]
+    report = apply_decisions(SOURCE, load_catalog(path), rows)
+    assert [(o.status, o.detail) for o in report.outcomes] == [("applied", "cleared fuzzy flag")] * 2
+    assert "fuzzy" not in path.read_text(encoding="utf-8")
+    again = apply_decisions(SOURCE, load_catalog(path), rows[:1])
+    assert statuses(again) == [("cancel:fuzzy", "skipped", "already applied")]

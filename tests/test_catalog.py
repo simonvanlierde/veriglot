@@ -1,7 +1,12 @@
+import codecs
 import shutil
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from veriglot.catalog import CatalogChangedError, is_read_only, load_catalog, write_texts
 
@@ -82,3 +87,99 @@ def test_vendored_role_keys_are_read_only():
     assert is_read_only("https://credit.niso.org/contributor-roles/software/name", ())
     assert not is_read_only("output.lead", ())
     assert is_read_only("output.lead", ("output.*",))
+
+
+HEAD = 'msgid ""\nmsgstr ""\n"Language: nl\\n"\n\n'
+
+
+def _po(tmp_path: Path, body: str, *, prefix: bytes = b"") -> Path:
+    path = tmp_path / "messages.po"
+    path.write_bytes(prefix + (HEAD + body).encode())
+    return path
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x0b", "\x0c", "\x1c", "\x1e", "\x85"])
+def test_write_counts_only_newlines_as_line_breaks(tmp_path: Path, separator: str):
+    z = separator.join("1234")
+    path = _po(tmp_path, f'msgid "z"\nmsgstr "{z}"\n\nmsgid "a"\nmsgstr "A"\n\nmsgid "b"\nmsgstr "B"\n')
+    write_texts(load_catalog(path), {"b": "B2"})
+    assert {k: e.text for k, e in load_catalog(path).entries.items()} == {"z": z, "a": "A", "b": "B2"}
+
+
+def test_write_refuses_a_block_that_is_not_the_entry(tmp_path: Path):
+    path = _po(tmp_path, 'msgid "a"\nmsgstr "A"\n\nmsgid "b"\nmsgstr "B"\n')
+    catalog = load_catalog(path)
+    wrong = replace(catalog.entries["b"], line=catalog.entries["a"].line)
+    with pytest.raises(ValueError, match="'b'"):
+        write_texts(replace(catalog, entries={**catalog.entries, "b": wrong}), {"b": "B2"})
+    assert load_catalog(path).entries["a"].text == "A"
+
+
+@given(st.text())
+@example("\x1e\x0c")
+def test_written_text_reads_back_and_later_writes_land(text: str):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _po(Path(tmp), 'msgid "z"\nmsgstr "Z"\n\nmsgid "a"\nmsgstr "A"\n\nmsgid "b"\nmsgstr "B"\n')
+        write_texts(load_catalog(path), {"z": text})
+        write_texts(load_catalog(path), {"b": "B2"})
+        assert {k: e.text for k, e in load_catalog(path).entries.items()} == {"z": text, "a": "A", "b": "B2"}
+
+
+def test_bom_is_not_part_of_the_header_and_survives_a_write(tmp_path: Path):
+    path = _po(tmp_path, 'msgid "a"\nmsgstr "{naam}"\n', prefix=codecs.BOM_UTF8)
+    catalog = load_catalog(path)
+    assert catalog.entries["a"].text == "{naam}"
+    assert catalog.locale == "nl"
+    write_texts(catalog, {"a": "{name}"})
+    assert path.read_bytes().startswith(codecs.BOM_UTF8)
+    assert load_catalog(path).entries["a"].text == "{name}"
+
+
+@pytest.mark.parametrize(
+    ("body", "line"),
+    [
+        ('msgid "a"\nmsgstr "unclosed\n', 6),
+        ('msgid "a"\nmsgstr "x"\n"tail\n', 7),
+        ('msgid "a"\nmsgstr "x" y\n', 6),
+        ('msgid "a"\nmsgstr "x"\nmsgtypo "y"\n', 7),
+        ('msgid "a"\n', 5),
+    ],
+)
+def test_malformed_po_is_refused_with_its_line(tmp_path: Path, body: str, line: int):
+    with pytest.raises(ValueError, match=rf"messages\.po:{line}:"):
+        load_catalog(_po(tmp_path, body))
+
+
+def test_write_clears_fuzzy_from_the_written_entry_only(tmp_path: Path):
+    path = _po(
+        tmp_path,
+        '#, fuzzy\nmsgid "a"\nmsgstr "A"\n\n'
+        '#. note\n#, fuzzy, javascript-format\nmsgctxt "c"\nmsgid "b"\nmsgstr "B"\n\n'
+        '#, fuzzy\nmsgid "c"\nmsgstr "C"\n',
+    )
+    catalog = load_catalog(path)
+    assert [e.fuzzy for e in catalog.entries.values()] == [True, True, True]
+    write_texts(catalog, {"a": "A2", "b": "B2"})
+    assert path.read_text(encoding="utf-8") == HEAD + (
+        'msgid "a"\nmsgstr "A2"\n\n#. note\n#, javascript-format\nmsgctxt "c"\nmsgid "b"\nmsgstr "B2"\n\n'
+        '#, fuzzy\nmsgid "c"\nmsgstr "C"\n'
+    )
+
+
+def test_failed_write_leaves_the_file_and_no_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    path = tmp_path / "messages.po"
+    shutil.copy(NL, path)
+    path.chmod(0o640)
+
+    def fail(*_: object) -> None:
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        write_texts(load_catalog(path), {"cancel": "Afbreken"})
+    assert path.read_bytes() == NL.read_bytes()
+    assert [p.name for p in tmp_path.iterdir()] == ["messages.po"]
+    monkeypatch.undo()
+    write_texts(load_catalog(path), {"cancel": "Afbreken"})
+    assert path.stat().st_mode & 0o777 == 0o640

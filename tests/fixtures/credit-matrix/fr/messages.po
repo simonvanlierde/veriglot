@@ -1,0 +1,39 @@
+msgid ""
+msgstr ""
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "stepContributors"
+msgstr "Contributeurs"
+
+msgid "cancel"
+msgstr "Annuler"
+
+msgid "annContributorRestored"
+msgstr "{name} restauré."
+
+msgid "importedContributors"
+msgstr "{count, plural, one {# contributeur importé} other {# contributeurs importés}}."
+
+msgid "normsPosition"
+msgstr "{position, select, single {Seul} first {Premier} middle {Milieu} other {Dernier}}"
+
+msgid "errImportNoXmlContribs"
+msgstr "Aucun élément <contrib> trouvé dans le XML."
+
+msgid "sampleNames"
+msgstr "Marie Curie\nSophie Germain\nHenri Poincaré"
+
+msgid "output.labelSeparator"
+msgstr " : "
+
+msgid "output.nameListSeparator"
+msgstr ", "
+
+msgid "output.levelAnnotation"
+msgstr "{label} ({level})"
+
+msgid "https://credit.niso.org/contributor-roles/conceptualization/name"
+msgstr "Conceptualisation"

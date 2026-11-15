@@ -1,0 +1,6 @@
+# Catalog fixtures are translations, not English.
+[files]
+extend-exclude = ["tests/fixtures/"]
+
+[default.extend-words]
+Christiaan = "Christiaan"

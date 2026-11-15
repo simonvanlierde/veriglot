@@ -83,6 +83,10 @@ allow-magic-value-types = ["int", "str"]
 max-args = 10
 
 # A rule set to "warn" reports without failing: ty otherwise exits 1 on warnings too.
+# scripts/ carries its own inline dependencies (torch, transformers), which this environment lacks.
+[tool.ty.src]
+exclude = ["scripts"]
+
 [tool.ty.terminal]
 error-on-warning = false
 

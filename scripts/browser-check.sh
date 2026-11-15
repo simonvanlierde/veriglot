@@ -11,7 +11,7 @@ cp tests/fixtures/credit-matrix/en/messages.po "$out/en/messages.po"
 printf '\nmsgid "bidiTest"\nmsgstr "Hello"\n' >>"$out/en/messages.po"
 printf '\nmsgid "bidiTest"\nmsgstr "Hallo\xe2\x80\xae x "\n' >>"$out/nl/messages.po"
 : >"$out/url"
-uv run veriglot review "$out/en/messages.po" "$out/nl/messages.po" --no-browser --port 8765 >"$out/url" &
+uv run veriglot review "$out/en/messages.po" "$out/nl/messages.po" --no-browser >"$out/url" &
 server=$!
 trap 'kill $server' EXIT
 until [ -s "$out/url" ]; do sleep 0.2; done

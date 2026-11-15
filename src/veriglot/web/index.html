@@ -18,6 +18,7 @@
     <button type="button" id="export">Export CSV</button>
     <label class="file">Import CSV <input type="file" id="import" accept=".csv,text/csv"></label>
   </div>
+  <p id="message" role="status"></p>
 </header>
 <main>
   <section aria-labelledby="list-h" class="list-pane">
@@ -38,8 +39,7 @@
       Spaces at the start or end of a text show as &middot;, line breaks as &crarr;, tabs as &rarr;.</p>
   </section>
   <section aria-labelledby="results-h" class="results-pane">
-    <h2 id="results-h">Last save</h2>
-    <p id="message" role="status"></p>
+    <h2 id="results-h">Results</h2>
     <ul id="results"></ul>
   </section>
 </main>

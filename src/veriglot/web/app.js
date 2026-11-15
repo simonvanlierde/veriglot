@@ -4,6 +4,9 @@
 
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 const $ = (id) => document.getElementById(id);
+// Live regions are written only when their text changes, so screen readers announce changes, not keystrokes.
+const say = (id, text) => { if ($(id).textContent !== text) $(id).textContent = text; };
+const note = (text, error = false) => { $("message").textContent = text; $("message").classList.toggle("error", error); };
 const state = { findings: [], decisions: new Map(), outcomes: new Map(), selected: null, dirty: false };
 
 async function api(path, body) {
@@ -82,9 +85,9 @@ function render() {
     button.dataset.id = f.id;
     return el("li", {}, button);
   }));
-  $("shown").textContent = `${rows.length} of ${state.findings.length} findings shown`;
+  say("shown", `${rows.length} of ${state.findings.length} findings shown`);
   const decided = [...state.decisions.values()].filter((d) => d.decision).length;
-  $("counter").textContent = `${decided} decided${state.dirty ? ", unsaved changes" : ""}`;
+  say("counter", `${decided} decided${state.dirty ? ", unsaved changes" : ""}`);
   renderDetail();
 }
 
@@ -119,7 +122,7 @@ function renderDetail() {
     area.addEventListener("keydown", (e) => { if (e.key === "Escape") list_focus(); });
     parts.push(el("label", { htmlFor: "edited" }, "Edited translation (Escape returns to the list)"), area);
   }
-  if (o) parts.push(el("p", { className: `badge ${o.status}` }, `Last save: ${outcomeText(o)}`));
+  if (o) parts.push(el("p", { className: `badge ${o.status}` }, `Last result: ${outcomeText(o)}`));
   body.replaceChildren(...parts);
 }
 
@@ -127,7 +130,7 @@ const outcomeText = (o) => `${o.status}${o.reason ? `: ${o.reason}` : ""}${o.det
 
 function markDirty() {
   state.dirty = true;
-  $("counter").textContent = `${[...state.decisions.values()].filter((d) => d.decision).length} decided, unsaved changes`;
+  say("counter", `${[...state.decisions.values()].filter((d) => d.decision).length} decided, unsaved changes`);
 }
 
 function decide(name) {
@@ -177,13 +180,13 @@ function showOutcomes(outcomes, prefix) {
   state.outcomes = new Map(outcomes.map((o) => [o.id, o]));
   const counts = { applied: 0, rejected: 0, skipped: 0 };
   outcomes.forEach((o) => { counts[o.status] += 1; });
-  $("message").textContent = `${prefix}: ${counts.applied} applied, ${counts.rejected} rejected, ${counts.skipped} skipped.`;
+  note(`${prefix}: ${counts.applied} applied, ${counts.rejected} rejected, ${counts.skipped} skipped.`);
   $("results").replaceChildren(...outcomes.map((o) => el("li", {}, `${o.id}: ${outcomeText(o)}`)));
 }
 
 async function save(dryRun) {
   const rows = rowsToSend();
-  if (!rows.length) { $("message").textContent = "Nothing decided yet."; return; }
+  if (!rows.length) { note("Nothing decided yet."); return; }
   const sent = new Map(state.decisions);
   try {
     const report = await (await api("/api/decisions", { rows, dry_run: dryRun })).json();
@@ -196,7 +199,7 @@ async function save(dryRun) {
     }
     state.dirty = state.decisions.size > 0;
     await load();
-  } catch (error) { $("message").textContent = `Save failed: ${error.message}`; }
+  } catch (error) { note(`Save failed: ${error.message}`, true); }
 }
 
 async function load() {
@@ -209,7 +212,7 @@ async function load() {
   const notes = [];
   if (gone.length) notes.push(`${gone.length} decision${gone.length === 1 ? "" : "s"} dropped: the finding is gone.`);
   data.errors.forEach((e) => notes.push(`${e.locale}: ${e.message}.`));
-  if (notes.length) $("message").textContent = `${$("message").textContent} ${notes.join(" ")}`.trim();
+  if (notes.length) note(`${$("message").textContent} ${notes.join(" ")}`.trim(), $("message").classList.contains("error"));
   fillSelect($("f-locale"), data.locales);
   fillSelect($("f-kind"), [...new Set(data.findings.map((f) => f.kind))].sort());
   fillSelect($("f-severity"), [...new Set(data.findings.map((f) => f.severity))]);
@@ -235,9 +238,9 @@ async function importCsv(file) {
       used += 1;
     }
     state.dirty = used > 0;
-    $("message").textContent = `Imported ${used} decisions from ${rows.length} rows.`;
+    note(`Imported ${used} decisions from ${rows.length} rows.`);
     render();
-  } catch (error) { $("message").textContent = `Import failed: ${error.message}`; }
+  } catch (error) { note(`Import failed: ${error.message}`, true); }
 }
 
 document.addEventListener("keydown", (e) => {
@@ -257,4 +260,4 @@ $("preview").addEventListener("click", () => save(true));
 $("export").addEventListener("click", exportCsv);
 $("import").addEventListener("change", (e) => { if (e.target.files[0]) importCsv(e.target.files[0]); e.target.value = ""; });
 addEventListener("beforeunload", (e) => { if (state.dirty) e.preventDefault(); });
-load().catch((error) => { $("message").textContent = `Could not load findings: ${error.message}`; });
+load().catch((error) => { note(`Could not load findings: ${error.message}`, true); });

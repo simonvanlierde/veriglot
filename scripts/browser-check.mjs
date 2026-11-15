@@ -40,6 +40,31 @@ await page.emulateMedia({ colorScheme: "dark" });
 await axe("list, dark");
 await page.emulateMedia({ colorScheme: "light" });
 
+// A page that cannot load shows the failure as an error.
+const broken = await page.context().newPage();
+await broken.goto(url.replace(/token=[^&]+/, "token=wrong"));
+await broken.waitForFunction(() => document.getElementById("message")?.textContent);
+check("load failure is marked as an error", await broken.evaluate(() => document.getElementById("message").classList.contains("error")));
+await broken.close();
+
+// Moving through the list does not rewrite the live regions, so screen readers stay quiet.
+await rows().first().focus();
+const writes = await page.evaluate(async () => {
+  let n = 0;
+  const seen = new MutationObserver((m) => { n += m.length; });
+  for (const id of ["shown", "counter"]) seen.observe(document.getElementById(id), { childList: true, characterData: true, subtree: true });
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 50));
+  seen.disconnect();
+  return n;
+});
+check("moving does not rewrite live regions", writes === 0, `${writes} writes`);
+
+// The focus ring of a list row is drawn inside the scrolling list, where it cannot be clipped.
+const ring = await page.evaluate(() => getComputedStyle(document.activeElement).outlineOffset);
+check("list row focus ring sits inside the list", Number.parseFloat(ring) < 0, ring);
+await page.keyboard.press("k");
+
 // Filters.
 const total = await rows().count();
 await page.selectOption("#f-kind", "untranslated");

@@ -36,6 +36,8 @@ build-backend = "uv_build"
 # Set here, not user-wide, so every machine writes the same uv.lock.
 [tool.uv]
 exclude-newer = "1 week"
+# tornado 6.6.1 fixes GHSA-5cjw-f85j-cv6r; drop this once the 1-week window passes 2026-11-10
+exclude-newer-package = { tornado = "2026-11-10T00:00:00Z" }
 
 # uv_build derives the package dir from the normalized project.name, so pin it
 # for a module_name that differs.

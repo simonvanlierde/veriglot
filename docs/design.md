@@ -25,14 +25,43 @@ interface, rather than introducing a general plugin framework.
 
 ## Simple web review
 
-Start with a local review list: filter by locale and error kind, inspect source,
-translation and context, edit wording, accept or reject, then save the decisions.
-Provide keyboard access, visible focus, labelled controls and an unsaved-changes warning.
+`veriglot review SOURCE TARGET...` serves a local review page. It lists findings, filters
+them by locale, kind, severity and text, shows source, translation, context and proposed
+text with edge spaces, line breaks and tabs made visible, and records accept, reject, edit
+or clear per finding. Save sends the decisions to `apply_decisions`, the function the CLI
+uses, and shows each row's outcome. There are no accounts, hosted database or collaborative
+workflow. The review and apply modules work without the browser, and CSV is not the page's
+data model: the page keeps decisions in memory and can export or import the CSV columns
+through `csvio`.
 
-The review UI needs no accounts, hosted database or collaborative workflow initially.
-Choose its frontend and transport when implementing it; the Python review and apply
-modules must be usable without a browser. CSV is an alternative interface, not the
-web UI's internal data model.
+Stack: the Python standard library `http.server` (`ThreadingHTTPServer`), one static HTML
+page, one vanilla JavaScript file and one CSS file in `veriglot.web`. This is the smallest
+thing that works: no runtime dependency, no npm build and no framework to keep patched, at
+the price of hand-written DOM code. Catalog text goes in with `textContent`, never
+`innerHTML`.
+
+API, all JSON except the CSV export:
+
+- `GET /api/findings`: `schema_version`, `locales`, `read_only`, `findings` and `errors` (a
+  locale whose catalog cannot be read, without paths). The catalogs are read again on every request.
+- `POST /api/decisions`: `{"rows": [...], "dry_run": false}` with the `DecisionRow` fields;
+  returns `written` and one outcome per row, as `ApplyReport` does. Rows for a locale
+  without a catalog are rejected as `unknown`, rows for an unreadable one as `unreadable`.
+- `POST /api/export`: decisions (with the fingerprint from when each was made) in, the
+  review CSV out; the exported fingerprint is that one, so re-importing cannot apply over newer text. `POST /api/import`: CSV text in,
+  decision rows out.
+
+Local-server safety: it binds 127.0.0.1 (a random free port unless `--port`), answers only
+requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), needs a
+per-run random token in the `X-Veriglot-Token` header on every `/api` call, sends no CORS
+headers, limits request bodies to 1 MiB and serves only its three static files with a
+strict Content-Security-Policy. The URL carries the token in the fragment, which browsers
+do not send. A stale fingerprint keeps a decision from overwriting newer text: the page
+sends the fingerprint from when the decision was made, and apply rejects it as `stale`.
+
+Accessibility: keyboard use (j/k or arrows, a/r/e/c, plus Tab and a roving tab stop in the
+list), visible focus, labelled controls, an unsaved-changes warning and a polite live region
+for results. See [accessibility](accessibility.md).
 
 ## Relationship to the sibling project
 

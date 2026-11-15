@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import sys
+import webbrowser
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
@@ -15,11 +16,13 @@ from veriglot.apply import ApplyReport, apply_decisions
 from veriglot.catalog import load_catalog
 from veriglot.csvio import read_decisions, write_findings
 from veriglot.review import Finding, Severity, check_catalogs
+from veriglot.web import make_server
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 SCHEMA_VERSION = 1
+MAX_PORT = 65535
 
 EPILOG = """\
 exit codes:
@@ -75,6 +78,19 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--source", type=Path, required=True, help="source-language catalog")
     apply.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
     apply.add_argument("--format", choices=("text", "json"), default="text", help="output format")
+
+    review = sub.add_parser(
+        "review",
+        parents=[read_only],
+        help="review findings in a local web page and save the decisions",
+        description="Serve a local web page on 127.0.0.1 for reviewing findings; saving applies the decisions.",
+        epilog="example:\n  veriglot review src/locales/en/messages.po src/locales/nl/messages.po\n\n" + EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    review.add_argument("source", type=Path, help="source-language catalog (.po or flat .json)")
+    review.add_argument("targets", type=Path, nargs="+", help="target catalogs; the source itself is skipped")
+    review.add_argument("--port", type=int, default=0, metavar="N", help="port to listen on (default: any free port)")
+    review.add_argument("--no-browser", action="store_true", help="print the URL without opening a browser")
     return parser
 
 
@@ -85,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", newline="\n")
     args = _parser().parse_args(argv)
     try:
-        return _check(args) if args.command == "check" else _apply(args)
+        return {"check": _check, "apply": _apply, "review": _review}[args.command](args)
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         sys.stdout.flush()
@@ -93,7 +109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.kill(os.getpid(), signal.SIGINT)
         return 130
     except (OSError, ValueError, RuntimeError) as exc:
-        if args.format == "json":
+        if getattr(args, "format", None) == "json":
             print(json.dumps({"schema_version": SCHEMA_VERSION, "errors": [{"message": str(exc), "help": None}]}))
         print(f"error: {exc}", file=sys.stderr)
         return 3
@@ -121,6 +137,21 @@ def _check(args: argparse.Namespace) -> int:
     summary = ", ".join(f"{n} {s}" for s, n in counts.items())
     print(f"{len(findings)} findings ({summary})", file=sys.stderr)
     return 1 if counts[Severity.ERROR] else 0
+
+
+def _review(args: argparse.Namespace) -> int:
+    if not 0 <= args.port <= MAX_PORT:
+        _parser().error(f"--port must be between 0 and {MAX_PORT}")
+    server = make_server(args.source, args.targets, tuple(args.read_only), port=args.port)
+    print(server.url, flush=True)
+    print("serving on 127.0.0.1; press Ctrl-C to stop", file=sys.stderr)
+    if not args.no_browser:
+        webbrowser.open(server.url)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+    return 0
 
 
 def _apply(args: argparse.Namespace) -> int:

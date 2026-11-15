@@ -9,6 +9,7 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 - `veriglot check` compares target catalogs (Lingui `.po`, flat JSON) with their source catalog and reports missing, extra and untranslated keys, placeholder, plural and select, tag, whitespace and ICU syntax problems, as text, JSON or a review CSV.
 - `veriglot apply` writes accepted and edited CSV decisions into a `.po` catalog and accounts for every row; stale, unknown, invalid and vendored rows are rejected, never applied.
 - `veriglot check` reports entries marked `#, fuzzy` (info), a plural branch that drops `#` or a placeholder its source branch has (warning), and per-branch tag differences; `veriglot apply` drops the `fuzzy` flag from entries it writes.
+- `veriglot review SOURCE TARGET...` serves a local web page on 127.0.0.1 to filter findings, edit, accept or reject them and save through the same apply code as `veriglot apply`, with CSV export and import.
 - Python development scaffold and [review design](docs/design.md), including the planned CSV and local web review interfaces.
 
 ### Fixed

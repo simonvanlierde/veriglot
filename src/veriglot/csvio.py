@@ -1,8 +1,9 @@
 """The reviewer CSV: findings out, decisions back in. A thin layer over review and apply.
 
-Text cells (``source``, ``target``, ``proposed``, ``edited``, ``context``, ``message``,
-``note``) that a spreadsheet would run as a formula, those starting with ``=``, ``+``,
-``-``, ``@``, a tab or a carriage return, get one leading ``'``. So do cells that start
+Text cells (``id``, ``key``, ``kind``, ``decision``, ``source``, ``target``, ``proposed``,
+``edited``, ``context``, ``message``, ``note``) that a spreadsheet would run as a formula,
+those starting with ``=``, ``+``, ``-``, ``@``, a tab or a carriage return, get one leading ``'``.
+So do cells that start
 with apostrophes followed by one of those characters, which keeps the escape reversible:
 reading strips exactly that one ``'``. Sensebank's review CSV follows the same rule.
 """
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING, TextIO
 from veriglot.apply import DecisionRow
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from veriglot.review import Finding
 
@@ -36,7 +37,9 @@ COLUMNS = (
     "note",
 )
 _REQUIRED = ("id", "fingerprint", "decision")
-_TEXT = frozenset({"source", "target", "proposed", "edited", "context", "message", "note"})
+_TEXT = frozenset(
+    {"id", "key", "kind", "decision", "source", "target", "proposed", "edited", "context", "message", "note"}
+)
 _FORMULA = re.compile(r"'*[=+\-@\t\r]")
 
 
@@ -50,14 +53,25 @@ def unescape_cell(text: str) -> str:
     return text[1:] if text.startswith("'") and _FORMULA.match(text, 1) else text
 
 
-def write_findings(findings: Iterable[Finding], stream: TextIO) -> None:
-    """Write findings with empty decision columns for a reviewer to fill in."""
+def write_findings(
+    findings: Iterable[Finding], stream: TextIO, decisions: Mapping[str, DecisionRow] | None = None
+) -> None:
+    """Write findings with the decision columns empty, or filled from ``decisions`` by finding id."""
     # Quote every cell so spreadsheets keep leading and trailing spaces.
     writer = csv.DictWriter(stream, COLUMNS, quoting=csv.QUOTE_ALL, lineterminator="\n")
     writer.writeheader()
     for finding in findings:
         row = {k: escape_cell(v or "") if k in _TEXT else v or "" for k, v in finding.to_dict().items()}
-        writer.writerow({**row, "decision": "", "edited": "", "note": ""})
+        made = (decisions or {}).get(finding.id)
+        writer.writerow(
+            {
+                **row,
+                "decision": escape_cell(made.decision) if made else "",
+                "fingerprint": made.fingerprint if made else row["fingerprint"],
+                "edited": escape_cell(made.edited or "") if made else "",
+                "note": escape_cell(made.note) if made else "",
+            }
+        )
 
 
 def read_decisions(stream: TextIO) -> list[DecisionRow]:
@@ -72,9 +86,9 @@ def read_decisions(stream: TextIO) -> list[DecisionRow]:
         raise ValueError(msg)
     return [
         DecisionRow(
-            id=row["id"],
+            id=unescape_cell(row["id"]),
             fingerprint=row["fingerprint"],
-            decision=row["decision"] or "",
+            decision=unescape_cell(row["decision"] or ""),
             proposed=unescape_cell(row.get("proposed") or "") or None,
             edited=unescape_cell(row.get("edited") or "") or None,
             note=unescape_cell(row.get("note") or ""),

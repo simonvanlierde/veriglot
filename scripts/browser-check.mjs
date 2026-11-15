@@ -1,45 +1,119 @@
 // Smoke test and axe scan for the review page. Run inside the Playwright image:
-//   node scripts/browser-check.mjs <url-with-token> [screenshot.png]
-// Needs `playwright` and `@axe-core/playwright` resolvable (NODE_PATH).
+//   node scripts/browser-check.mjs <url-with-token> <screenshot.png>
+// The catalogs sit next to the screenshot (nl/messages.po), so the script can change them
+// the way an editor would while the page is open. Needs `playwright` and `@axe-core/playwright`.
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { chromium } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
 
 const [url, shot] = process.argv.slice(2);
+const nl = `${dirname(shot)}/nl/messages.po`;
 const browser = await chromium.launch();
-const page = await (await browser.newContext()).newPage();
+const page = await (await browser.newContext({ acceptDownloads: true })).newPage();
 await page.goto(url);
 await page.waitForSelector("#list button");
 
+let failures = 0;
+const check = (name, ok, detail = "") => {
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : ` ${detail}`}`);
+  if (!ok) failures += 1;
+};
 const axe = async (label) => {
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"]).analyze();
   console.log(`axe ${label}: ${violations.length} violations`);
   for (const v of violations) console.log(`  ${v.id} (${v.impact}): ${v.help} [${v.nodes.map((n) => n.target.join(" ")).join("; ")}]`);
-  return violations.length;
+  failures += violations.length;
 };
+const edit = (from, to) => writeFileSync(nl, readFileSync(nl, "utf8").replace(from, to));
+const rows = () => page.locator("#list button");
+const pick = async (text) => { await page.fill("#f-text", text); await rows().first().focus(); };
+const finding = (id) => page.evaluate(async (want) => {
+  const token = new URLSearchParams(location.hash.slice(1)).get("token");
+  const data = await (await fetch("/api/findings", { headers: { "X-Veriglot-Token": token } })).json();
+  return data.findings.find((f) => f.id === want);
+}, id);
+const counter = () => page.textContent("#counter");
 
-let failures = await axe("list");
+await axe("list");
 await page.emulateMedia({ colorScheme: "dark" });
-failures += await axe("list, dark");
+await axe("list, dark");
 await page.emulateMedia({ colorScheme: "light" });
-const total = await page.locator("#list button").count();
+
+// Filters.
+const total = await rows().count();
 await page.selectOption("#f-kind", "untranslated");
-const shown = await page.locator("#list button").count();
-console.log(`filter kind=untranslated: ${shown} of ${total} rows`);
-await page.fill("#f-text", "cancel");
-console.log(`search cancel: ${await page.locator("#list button").count()} rows`);
-await page.locator("#list button").first().focus();
+check("filter by kind", (await rows().count()) < total);
+await page.selectOption("#f-kind", "");
+await pick("cancel");
+check("search", (await rows().count()) === 1);
+
+// Enter in a field submits the filter form unless a handler cancels it (inline handlers are
+// blocked by the CSP); a real submit would reload the page and lose the token.
+const submitted = await page.evaluate(() => document.getElementById("filters").dispatchEvent(new Event("submit", { cancelable: true })));
+check("filter form submit is cancelled", !submitted);
+
+// Invisible format characters are marked.
+await pick("bidiTest");
+const shown = await page.locator("#detail-body pre").nth(1).textContent();
+check("bidi control shown as U+202E", shown.includes("‹U+202E›"), JSON.stringify(shown));
+
+// A decision changed while a save is in flight survives it.
+await pick("cancel");
+await page.keyboard.press("r");
+await page.route("**/api/decisions", async (route) => { await new Promise((r) => setTimeout(r, 600)); await route.continue(); });
+await page.click("#save");
+await page.waitForTimeout(150);
 await page.keyboard.press("e");
-failures += await axe("edit open");
+await page.waitForSelector("#results li");
+await page.unroute("**/api/decisions");
+check("decision changed during save is kept", (await counter()).startsWith("1 decided"), await counter());
+await page.keyboard.press("c");
+
+// Stale save: the file changes under an open decision.
+await pick("labelSeparator");
+const before = await finding("nl:output.labelSeparator:whitespace");
+await page.keyboard.press("e");
+edit('msgid "output.labelSeparator"\nmsgstr ":"', 'msgid "output.labelSeparator"\nmsgstr ";"');
+await page.click("#save");
+await page.waitForFunction(() => document.querySelector("#results")?.textContent.includes("stale"));
+const after = await finding("nl:output.labelSeparator:whitespace");
+check("changed text is rejected as stale", after.fingerprint !== before.fingerprint);
+const [download] = await Promise.all([page.waitForEvent("download"), page.click("#export")]);
+const csv = readFileSync(await download.path(), "utf8");
+const exported = csv.slice(csv.indexOf('"nl:output.labelSeparator:whitespace"')).match(/"([0-9a-f]{16})"/)?.[1];
+check("export keeps the decision-time fingerprint", exported === before.fingerprint, `${exported} vs ${before.fingerprint}`);
+await rows().first().focus();
+await page.keyboard.press("e");
+await page.click("#save");
+await page.waitForFunction(() => document.querySelector("#message")?.textContent.startsWith("Saved"), null, { timeout: 5000 }).catch(() => {});
+const retried = await page.textContent("#results");
+check("deciding again after a reload uses the current fingerprint", retried.includes("applied") && !retried.includes("stale"), retried);
+
+// A decision whose finding disappears is dropped, with a note.
+await pick("bidiTest");
+await page.keyboard.press("e");
+edit(/msgstr "Hallo\u202e x "/u, 'msgstr "Hallo"');
+await page.click("#save");
+await page.waitForFunction(() => document.querySelector("#message")?.textContent.includes("Saved") || document.querySelector("#message")?.textContent.includes("Nothing"));
+await page.waitForTimeout(300);
+check("decision on a vanished finding is dropped", (await counter()).startsWith("0 decided"), await counter());
+check("drop is reported", (await page.textContent("#message")).includes("dropped"), await page.textContent("#message"));
+
+// Main flow: edit one finding by keyboard and save.
+await pick("cancel");
+await page.keyboard.press("e");
+await axe("edit open");
 await page.fill("#edited", "Annuleren");
 await page.screenshot({ path: shot, fullPage: true });
 await page.click("#save");
-await page.waitForSelector("#results li");
+await page.waitForFunction(() => document.querySelector("#message")?.textContent.startsWith("Saved"));
 const message = await page.textContent("#message");
 const results = await page.locator("#results li").allTextContents();
 console.log(`message: ${message}`);
 console.log(`outcome: ${results.join(" | ")}`);
-const ok = message.includes("1 applied") && results.some((r) => r.includes("applied"));
-failures += await axe("after save");
-console.log(ok ? "smoke: PASS" : "smoke: FAIL");
+check("save applies the edit", message.includes("1 applied") && results.some((r) => r.includes("applied")));
+await axe("after save");
+console.log(failures === 0 ? "smoke: PASS" : `smoke: FAIL (${failures})`);
 await browser.close();
-process.exit(ok && failures === 0 ? 0 : 1);
+process.exit(failures === 0 ? 0 : 1);

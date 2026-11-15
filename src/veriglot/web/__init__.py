@@ -6,6 +6,7 @@ It listens on 127.0.0.1 only, accepts only its own ``Host`` values (DNS rebindin
 per-run token on every ``/api`` request and sends no CORS headers.
 """
 
+import csv
 import hmac
 import io
 import json
@@ -33,6 +34,8 @@ _STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
+_UNREADABLE = "the catalog could not be read or written"
+_DECISIONS = frozenset({"accept", "edit", "reject", ""})
 _CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
 )
@@ -58,24 +61,38 @@ class ReviewServer(ThreadingHTTPServer):
         """The address to open: the token rides in the fragment, which browsers never send."""
         return f"http://127.0.0.1:{self.server_port}/#token={self.token}"
 
-    def findings(self) -> list[Finding]:
-        """Findings for every target, from the files as they are now."""
+    def findings(self) -> tuple[list[Finding], list[dict[str, str]]]:
+        """Findings for every readable target, from the files as they are now, and the unreadable locales."""
         source = load_catalog(self.source)
-        return [f for path in self.targets.values() for f in check_catalogs(source, load_catalog(path), self.read_only)]
+        found: list[Finding] = []
+        errors: list[dict[str, str]] = []
+        for locale, path in self.targets.items():
+            try:
+                found += check_catalogs(source, load_catalog(path), self.read_only)
+            except OSError, ValueError, RuntimeError:
+                errors.append({"locale": locale, "message": _UNREADABLE})
+        return found, errors
 
     def decide(self, rows: list[DecisionRow], *, dry_run: bool) -> tuple[list[Outcome], bool]:
-        """Apply rows per locale; rows for a locale without a catalog are rejected as unknown."""
+        """Apply rows per locale; a locale that cannot be read or written rejects only its own rows."""
         source = load_catalog(self.source)
-        outcomes: dict[str, Outcome] = {}
+        outcomes: dict[int, Outcome] = {}
         written = False
         with self.lock:
             for locale, path in self.targets.items():
-                mine = [r for r in rows if r.id.partition(":")[0] == locale]
-                report = apply_decisions(source, load_catalog(path), mine, read_only=self.read_only, dry_run=dry_run)
+                mine = [i for i, r in enumerate(rows) if r.id.partition(":")[0] == locale]
+                try:
+                    target = load_catalog(path)
+                    report = apply_decisions(
+                        source, target, [rows[i] for i in mine], read_only=self.read_only, dry_run=dry_run
+                    )
+                except OSError, ValueError, RuntimeError:
+                    outcomes |= {i: Outcome(rows[i].id, "rejected", "unreadable", _UNREADABLE) for i in mine}
+                    continue
                 written |= report.written
-                outcomes |= {o.id: o for o in report.outcomes}
-        unknown = [Outcome(r.id, "rejected", "unknown", "no catalog for this locale") for r in rows]
-        return [outcomes.get(r.id, u) for r, u in zip(rows, unknown, strict=True)], written
+                outcomes |= dict(zip(mine, report.outcomes, strict=True))
+        unknown = "no catalog for this locale"
+        return [outcomes.get(i) or Outcome(r.id, "rejected", "unknown", unknown) for i, r in enumerate(rows)], written
 
 
 def make_server(
@@ -107,6 +124,7 @@ def make_server(
 class _Handler(BaseHTTPRequestHandler):
     server: ReviewServer  # ty: ignore[invalid-mutable-override]
     protocol_version = "HTTP/1.1"
+    timeout = 10  # seconds a client may stall on a read
 
     def do_GET(self) -> None:
         self._serve(self._get)
@@ -124,8 +142,13 @@ class _Handler(BaseHTTPRequestHandler):
         except _HttpError as exc:
             status, ctype, body = exc.status, "application/json", _json({"error": str(exc)})
             self.close_connection = True  # an unread request body may still be on the wire
-        except (OSError, ValueError, RuntimeError) as exc:
-            status, ctype, body = HTTPStatus.INTERNAL_SERVER_ERROR, "application/json", _json({"error": str(exc)})
+        except OSError, ValueError, RuntimeError:
+            # The text of these errors holds file paths, so it stays out of the reply.
+            status, ctype, body = (
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "application/json",
+                _json({"error": "internal error"}),
+            )
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -150,8 +173,9 @@ class _Handler(BaseHTTPRequestHandler):
             name, ctype = _STATIC[path]
             return HTTPStatus.OK, ctype, resources.files("veriglot.web").joinpath(name).read_bytes()
         if path == "/api/findings":
-            found = self.server.findings()
+            found, errors = self.server.findings()
             payload = {
+                "errors": errors,
                 "schema_version": SCHEMA_VERSION,
                 "locales": list(self.server.targets),
                 "read_only": list(self.server.read_only),
@@ -166,20 +190,25 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._body()
         if path == "/api/decisions":
             rows = _rows(body.get("rows"))
-            outcomes, written = self.server.decide(rows, dry_run=bool(body.get("dry_run")))
+            dry_run = body.get("dry_run", False)
+            if not isinstance(dry_run, bool):
+                raise _HttpError(HTTPStatus.BAD_REQUEST, "dry_run must be true or false")
+            outcomes, written = self.server.decide(rows, dry_run=dry_run)
             payload = {"schema_version": SCHEMA_VERSION, "written": written, "outcomes": [asdict(o) for o in outcomes]}
             return HTTPStatus.OK, "application/json", _json(payload)
         if path == "/api/export":
-            decisions = {r.id: r for r in _rows(body.get("decisions"), need_fingerprint=False)}
+            decisions = {r.id: r for r in _rows(body.get("decisions"))}
+            if any(r.decision not in _DECISIONS for r in decisions.values()):
+                raise _HttpError(HTTPStatus.BAD_REQUEST, "decision must be accept, edit, reject or empty")
             out = io.StringIO()
-            write_findings(self.server.findings(), out, decisions)
+            write_findings(self.server.findings()[0], out, decisions)
             return HTTPStatus.OK, "text/csv; charset=utf-8", out.getvalue().encode()
         text = body.get("csv")
         if not isinstance(text, str):
             raise _HttpError(HTTPStatus.BAD_REQUEST, "csv must be a string")
         try:
             rows = read_decisions(io.StringIO(text.removeprefix(chr(0xFEFF)), newline=""))
-        except ValueError as exc:
+        except (ValueError, csv.Error) as exc:
             raise _HttpError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         return (
             HTTPStatus.OK,
@@ -192,18 +221,22 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             raise _HttpError(HTTPStatus.LENGTH_REQUIRED, "Content-Length required") from None
+        if length < 0:
+            raise _HttpError(HTTPStatus.BAD_REQUEST, "negative Content-Length")
         if length > MAX_BODY:
             raise _HttpError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"body over {MAX_BODY} bytes")
         try:
             body = json.loads(self.rfile.read(length))
-        except ValueError as exc:  # includes UnicodeDecodeError
+        except TimeoutError as exc:
+            raise _HttpError(HTTPStatus.REQUEST_TIMEOUT, "request body did not arrive") from exc
+        except (ValueError, RecursionError) as exc:  # ValueError includes UnicodeDecodeError
             raise _HttpError(HTTPStatus.BAD_REQUEST, "body is not JSON") from exc
         if not isinstance(body, dict):
             raise _HttpError(HTTPStatus.BAD_REQUEST, "body must be a JSON object")
         return body
 
 
-def _rows(raw: object, *, need_fingerprint: bool = True) -> list[DecisionRow]:
+def _rows(raw: object) -> list[DecisionRow]:
     if not isinstance(raw, list):
         raise _HttpError(HTTPStatus.BAD_REQUEST, "rows must be a list")
     rows = []
@@ -212,7 +245,7 @@ def _rows(raw: object, *, need_fingerprint: bool = True) -> list[DecisionRow]:
             raise _HttpError(HTTPStatus.BAD_REQUEST, "each row needs a string id")
         fields = {k: item.get(k) for k in ("fingerprint", "decision", "proposed", "edited", "note")}
         text_ok = all(v is None or isinstance(v, str) for v in fields.values())
-        if not text_ok or (need_fingerprint and not isinstance(fields["fingerprint"], str)):
+        if not text_ok or not isinstance(fields["fingerprint"], str):
             raise _HttpError(HTTPStatus.BAD_REQUEST, "row fields must be strings")
         rows.append(
             DecisionRow(

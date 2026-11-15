@@ -29,17 +29,22 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
-// Text with edge spaces, line breaks and tabs made visible.
+// Text with edge spaces, line breaks, tabs and invisible format characters (bidi controls,
+// zero-width) made visible.
 function visible(text) {
   if (text === "" || text == null) return el("span", { className: "empty" }, "(empty)");
   const out = document.createDocumentFragment();
-  const lead = text.length - text.trimStart().length;
-  const trail = text.length - text.trimEnd().length;
+  const chars = [...text];
+  let lead = 0;
+  while (lead < chars.length && /\s/u.test(chars[lead])) lead += 1;
+  let trail = 0;
+  while (trail < chars.length - lead && /\s/u.test(chars[chars.length - 1 - trail])) trail += 1;
   let plain = "";
   const flush = () => { if (plain) out.append(plain); plain = ""; };
-  [...text].forEach((ch, i) => {
-    const edge = i < lead || i >= text.length - trail;
-    const mark = { " ": edge ? "\u00b7" : "", "\u00a0": "\u2423", "\t": "→", "\n": "↵\n" }[ch];
+  chars.forEach((ch, i) => {
+    const edge = i < lead || i >= chars.length - trail;
+    let mark = { " ": edge ? "\u00b7" : "", "\u00a0": "\u2423", "\t": "\u2192", "\n": "\u21b5\n" }[ch];
+    if (/\p{Cf}/u.test(ch)) mark = `\u2039U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}\u203a`;
     if (mark) { flush(); out.append(el("span", { className: "ws" }, mark)); } else plain += ch;
   });
   flush();
@@ -109,7 +114,8 @@ function renderDetail() {
   parts[4].setAttribute("aria-label", "Decision");
   if (d?.decision === "edit") {
     const area = el("textarea", { id: "edited", value: d.edited, spellcheck: false });
-    area.addEventListener("input", () => { d.edited = area.value; markDirty(); });
+    // A new object each time, so a save in flight can tell the row changed after it was sent.
+    area.addEventListener("input", () => { state.decisions.set(f.id, { ...state.decisions.get(f.id), edited: area.value }); markDirty(); });
     area.addEventListener("keydown", (e) => { if (e.key === "Escape") list_focus(); });
     parts.push(el("label", { htmlFor: "edited" }, "Edited translation (Escape returns to the list)"), area);
   }
@@ -131,8 +137,9 @@ function decide(name) {
   if (name === "") state.decisions.delete(f.id);
   else {
     const old = state.decisions.get(f.id);
+    // The reviewer sees the current text when deciding, so the fingerprint is the current one.
     state.decisions.set(f.id, {
-      decision: name, fingerprint: old?.fingerprint ?? f.fingerprint, note: old?.note ?? "",
+      decision: name, fingerprint: f.fingerprint, note: old?.note ?? "",
       edited: name === "edit" ? old?.edited || f.proposed || f.target : old?.edited ?? "",
     });
   }
@@ -177,12 +184,16 @@ function showOutcomes(outcomes, prefix) {
 async function save(dryRun) {
   const rows = rowsToSend();
   if (!rows.length) { $("message").textContent = "Nothing decided yet."; return; }
+  const sent = new Map(state.decisions);
   try {
     const report = await (await api("/api/decisions", { rows, dry_run: dryRun })).json();
     showOutcomes(report.outcomes, dryRun ? "Preview, nothing written" : report.written ? "Saved" : "Nothing written");
     if (dryRun) { render(); return; }
     // Applied and no-longer-needed decisions are done; rejected ones stay for another look.
-    for (const o of report.outcomes) if (o.status !== "rejected") state.decisions.delete(o.id);
+    // Only if the row was not changed while the save ran.
+    for (const o of report.outcomes) {
+      if (o.status !== "rejected" && state.decisions.get(o.id) === sent.get(o.id)) state.decisions.delete(o.id);
+    }
     state.dirty = state.decisions.size > 0;
     await load();
   } catch (error) { $("message").textContent = `Save failed: ${error.message}`; }
@@ -191,6 +202,14 @@ async function save(dryRun) {
 async function load() {
   const data = await (await api("/api/findings")).json();
   state.findings = data.findings;
+  const ids = new Set(data.findings.map((f) => f.id));
+  const gone = [...state.decisions.keys()].filter((id) => !ids.has(id));
+  gone.forEach((id) => state.decisions.delete(id));
+  if (gone.length) state.dirty = state.decisions.size > 0;
+  const notes = [];
+  if (gone.length) notes.push(`${gone.length} decision${gone.length === 1 ? "" : "s"} dropped: the finding is gone.`);
+  data.errors.forEach((e) => notes.push(`${e.locale}: ${e.message}.`));
+  if (notes.length) $("message").textContent = `${$("message").textContent} ${notes.join(" ")}`.trim();
   fillSelect($("f-locale"), data.locales);
   fillSelect($("f-kind"), [...new Set(data.findings.map((f) => f.kind))].sort());
   fillSelect($("f-severity"), [...new Set(data.findings.map((f) => f.severity))]);
@@ -198,7 +217,7 @@ async function load() {
 }
 
 async function exportCsv() {
-  const decisions = rowsToSend().map(({ id, decision, edited, note }) => ({ id, decision, edited, note }));
+  const decisions = rowsToSend().map(({ id, fingerprint, decision, edited, note }) => ({ id, fingerprint, decision, edited, note }));
   const csv = await (await api("/api/export", { decisions })).blob();
   const link = el("a", { href: URL.createObjectURL(csv), download: "veriglot-review.csv" });
   link.click();
@@ -232,6 +251,7 @@ $("list").addEventListener("click", (e) => {
   if (id) { state.selected = id; render(); focusButton(id); }
 });
 $("filters").addEventListener("input", render);
+$("filters").addEventListener("submit", (e) => e.preventDefault());
 $("save").addEventListener("click", () => save(false));
 $("preview").addEventListener("click", () => save(true));
 $("export").addEventListener("click", exportCsv);

@@ -42,12 +42,13 @@ the price of hand-written DOM code. Catalog text goes in with `textContent`, nev
 
 API, all JSON except the CSV export:
 
-- `GET /api/findings`: `schema_version`, `locales`, `read_only`, `findings`. The catalogs are
-  read again on every request.
+- `GET /api/findings`: `schema_version`, `locales`, `read_only`, `findings` and `errors` (a
+  locale whose catalog cannot be read, without paths). The catalogs are read again on every request.
 - `POST /api/decisions`: `{"rows": [...], "dry_run": false}` with the `DecisionRow` fields;
   returns `written` and one outcome per row, as `ApplyReport` does. Rows for a locale
-  without a catalog are rejected as `unknown`.
-- `POST /api/export`: decisions in, the review CSV out. `POST /api/import`: CSV text in,
+  without a catalog are rejected as `unknown`, rows for an unreadable one as `unreadable`.
+- `POST /api/export`: decisions (with the fingerprint from when each was made) in, the
+  review CSV out; the exported fingerprint is that one, so re-importing cannot apply over newer text. `POST /api/import`: CSV text in,
   decision rows out.
 
 Local-server safety: it binds 127.0.0.1 (a random free port unless `--port`), answers only

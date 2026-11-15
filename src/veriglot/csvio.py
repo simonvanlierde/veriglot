@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TextIO
 from veriglot.apply import DecisionRow
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from veriglot.review import Finding
 
@@ -50,14 +50,24 @@ def unescape_cell(text: str) -> str:
     return text[1:] if text.startswith("'") and _FORMULA.match(text, 1) else text
 
 
-def write_findings(findings: Iterable[Finding], stream: TextIO) -> None:
-    """Write findings with empty decision columns for a reviewer to fill in."""
+def write_findings(
+    findings: Iterable[Finding], stream: TextIO, decisions: Mapping[str, DecisionRow] | None = None
+) -> None:
+    """Write findings with the decision columns empty, or filled from ``decisions`` by finding id."""
     # Quote every cell so spreadsheets keep leading and trailing spaces.
     writer = csv.DictWriter(stream, COLUMNS, quoting=csv.QUOTE_ALL, lineterminator="\n")
     writer.writeheader()
     for finding in findings:
         row = {k: escape_cell(v or "") if k in _TEXT else v or "" for k, v in finding.to_dict().items()}
-        writer.writerow({**row, "decision": "", "edited": "", "note": ""})
+        made = (decisions or {}).get(finding.id)
+        writer.writerow(
+            {
+                **row,
+                "decision": made.decision if made else "",
+                "edited": escape_cell(made.edited or "") if made else "",
+                "note": escape_cell(made.note) if made else "",
+            }
+        )
 
 
 def read_decisions(stream: TextIO) -> list[DecisionRow]:

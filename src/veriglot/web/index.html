@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veriglot review</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#detail">Skip to the selected finding</a>
+<header>
+  <h1>Veriglot review</h1>
+  <p id="counter" role="status"></p>
+  <div class="actions">
+    <button type="button" id="save">Save decisions</button>
+    <button type="button" id="preview">Preview</button>
+    <button type="button" id="export">Export CSV</button>
+    <label class="file">Import CSV <input type="file" id="import" accept=".csv,text/csv"></label>
+  </div>
+</header>
+<main>
+  <section aria-labelledby="list-h" class="list-pane">
+    <h2 id="list-h">Findings</h2>
+    <form id="filters" onsubmit="return false">
+      <label>Locale <select id="f-locale"><option value="">All</option></select></label>
+      <label>Kind <select id="f-kind"><option value="">All</option></select></label>
+      <label>Severity <select id="f-severity"><option value="">All</option></select></label>
+      <label>Search <input type="search" id="f-text" autocomplete="off"></label>
+    </form>
+    <p id="shown" role="status"></p>
+    <ul id="list" aria-label="Findings"></ul>
+  </section>
+  <section id="detail" aria-labelledby="detail-h" class="detail-pane" tabindex="-1">
+    <h2 id="detail-h">Selected finding</h2>
+    <div id="detail-body"><p>No finding selected.</p></div>
+    <p class="hint">Keys: j or Down for the next finding, k or Up for the previous, a accept, r reject, e edit, c clear.
+      Spaces at the start or end of a text show as &middot;, line breaks as &crarr;, tabs as &rarr;.</p>
+  </section>
+  <section aria-labelledby="results-h" class="results-pane">
+    <h2 id="results-h">Last save</h2>
+    <p id="message" role="status"></p>
+    <ul id="results"></ul>
+  </section>
+</main>
+</body>
+</html>

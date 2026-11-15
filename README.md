@@ -3,7 +3,7 @@
 Review app translations with local models and deterministic checks.
 
 The `veriglot` command checks translation catalogs against their source catalog and
-applies the corrections a reviewer accepted. Model-assisted review and the web UI are
+applies the corrections a reviewer accepted. Model-assisted review is
 planned; see the [design](docs/design.md).
 
 ## Scope
@@ -12,8 +12,8 @@ UI catalogs: message keys, source and target text, locale, glossary and usage co
 
 Placeholder and plural checks, terminology checks and model-assisted review. Catalog adapters preserve significant whitespace and never change vendored translations.
 
-A simple local web UI is planned for reviewing findings, editing proposed wording
-and accepting or rejecting changes. CSV remains an alternative for the same review.
+A simple local web page reviews findings, edits proposed wording and accepts or rejects
+changes. CSV is an alternative for the same review.
 
 ## Usage
 
@@ -65,6 +65,19 @@ since it was read.
 
 Text cells that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, a
 tab or a carriage return) are written with one leading `'`, which `apply` strips again.
+
+### Web review
+
+```sh
+veriglot review src/locales/en/messages.po src/locales/*/messages.po [--port N] [--no-browser] [--read-only GLOB]
+```
+
+Prints a URL such as `http://127.0.0.1:41873/#token=...` and opens it in a browser unless
+`--no-browser`. The server listens on 127.0.0.1 only and stops on Ctrl-C. Filter by locale,
+kind, severity or text; move with `j`/`k` or the arrow keys; `a` accepts the proposed text, `r`
+rejects, `e` edits, `c` clears. Save applies the decisions with the same code as
+`veriglot apply` and shows each row as applied, rejected or skipped with the reason. Export
+and import use the review CSV columns. See [accessibility](docs/accessibility.md).
 
 CRediT role names (`https://credit.niso.org/contributor-roles/...`) are vendored and
 never written; `--read-only GLOB` protects more keys.

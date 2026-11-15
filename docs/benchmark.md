@@ -43,7 +43,7 @@ on unperturbed strings.
   (omission, addition, terminology, register and untranslated name themselves; negation, number, entity and sense map to
   `meaning`). Items whose answer failed the schema twice are left out of n and listed as "failed".
   The flag rate on unperturbed strings is not a false-positive rate.
-- **Scorer of record.** MetricX-24 is the scorer of record for this project and was not run here.
+- **Scorer of record.** MetricX-24 is the scorer of record for this project; its QE scores are tabulated below as a baseline detector.
   The origin of the catalog's translations is not recorded here, so a judged model may have written some of them; a
   run that excludes self-judging needs that provenance first.
 
@@ -59,10 +59,16 @@ on unperturbed strings.
 | Request | temperature 0, seed 0 (+1 on the retry), max 1024 tokens, `structured_outputs` JSON schema, `chat_template_kwargs: {"enable_thinking": false}` | same |
 | Prompts (SHA-256) | review `9acc54e2366f776c4364888af1e3a60a64bdf44dd39fa1937be96e9443c14912`, direct-judge `ea515e6d8dfeacbd1254bcec6bc0cd3caa22cb23e3925defb8eeb30e402cf6e5` | same |
 | Schemas (SHA-256) | ModelReview `64678b3a43f97a376a438d4f27a98a469fa6fec62215133b8ba85e3fbb641331`, Verdict `5a3471eb500ce7b96d9bb88053f7d131506b5087cdd50f136e9be578612756c3` | same |
-| Calls | 834 (2 retried after `finish_reason: length`, 1 item failed twice) | 833 (none failed) |
+| Calls (attempts, counted from `calls.jsonl`) | 834: 832 ok, 2 failed (both attempts of one direct-judge item, `finish_reason: length` at 1024 tokens, so that item is excluded from n) | 833, all ok |
 | Tokens | 249,034 prompt, 90,771 completion | 248,612 prompt, 67,300 completion |
 
 Items file SHA-256 `610d2a0e2c9be1f60d874bc912e79ff7e451eb19e95ce6088944fdabdd0d6f57`, 417 items (139 per language).
+**The prompts changed after these runs.** The numbers come from the prompts with the hashes above, which put
+the source and translation between `<<<` and `>>>` lines. A string containing such a line could close its field, so
+the repository's prompts now JSON-encode the key, context, source and translation and have new hashes. The models were
+not run again, so the published numbers belong to the old prompt text, which is no longer in the repository (see the
+commit history of `src/veriglot/prompts/`). Rerunning on the new prompts needs `bench run` into a new `--out`.
+
 The two servers ran with different context and batching flags because the first Qwen start with
 the Gemma settings ran out of KV-cache memory; the flags change memory use, not the answers
 at temperature 0, but this was not tested. Reasoning was off for both models. Gemma's card lists
@@ -149,6 +155,39 @@ Per language (n = 12 per scripted kind except number n = 5; n = 8 per hand-writt
 - Planted omission, addition and untranslated strings make a visibly odd sentence. Detection of those
   says the model reads the text; it does not say it would find a subtle mistranslation in text that reads well.
 
+## A quality-estimation baseline
+
+MetricX-24 (`google/metricx-24-hybrid-xl-v2p6-bfloat16` @ `1aa765b1705d36c85c9fab40e2f7ce1e0ff69705`,
+tokenizer `google/mt5-xl` @ `63fc6450d80515b48e026b69ef2fbbd426433e84`) scored all 417 items in reference-free
+quality-estimation mode with `scripts/metricx_qe.py`: input `source: S candidate: T`, no attention mask, `use_cache=False`,
+scores clipped to [0, 25], lower is better. Code was `models.py` of google-research/metricx at commit `fc4978eb`
+with one change for transformers 5; software was transformers 4.57.6 and torch 2.15.0 in bfloat16 on one GPU,
+8 seconds for all items. The script in the repository needs a checkout of that commit and has not been run against the unpatched file.
+
+A score is not a flag, so a threshold turns it into one. Each threshold was chosen on the 150 unperturbed controls so that
+about 7% (the flag rate of Qwen's review) or 10% of them score above it. That makes the recall **in-sample**: the
+threshold was tuned on the controls of the set it is then scored on, so the figures are not an out-of-sample estimate. The tables are
+recomputed from `scores.jsonl` by `veriglot bench score ITEMS --qe DIR`; the 10% target flagged 15 of 150 controls.
+
+| Planted kind | score > 6.28 (target 7%) | score > 4.94 (target 10%) |
+|---|---|---|
+| omission | 17/36 = 47% [32%-63%] | 18/36 = 50% [34%-66%] |
+| addition | 3/36 = 8% [3%-22%] | 5/36 = 14% [6%-29%] |
+| negation | 8/36 = 22% [12%-38%] | 13/36 = 36% [22%-52%] |
+| number | 2/15 = 13% [4%-38%] | 3/15 = 20% [7%-45%] |
+| entity | 5/36 = 14% [6%-29%] | 7/36 = 19% [10%-35%] |
+| untranslated | 28/36 = 78% [62%-88%] | 30/36 = 83% [68%-92%] |
+| sense | 3/24 = 12% [4%-31%] | 6/24 = 25% [12%-45%] |
+| terminology | 3/24 = 12% [4%-31%] | 4/24 = 17% [7%-36%] |
+| register | 0/24 = 0% [0%-14%] | 2/24 = 8% [2%-26%] |
+| flags on unperturbed strings | 10/150 = 7% [4%-12%] | 15/150 = 10% [6%-16%] |
+
+At a matched flag rate the QE scorer catches far less than Qwen's review (Qwen flags 7% of controls and finds at least
+92% of every kind). It finds most untranslated runs (28/36 at 7%) and about half the omissions, and little else.
+MetricX is a general translation-quality scorer. It was not trained for terminology or register rules, and it sees no
+glossary or style rule, so its near-zero terminology and register rows measure that mismatch as well as
+the scorer.
+
 ## Park criterion
 
 The design's park criterion 1 is "recall below 70% on the seeded set after M2 with the best local model, and no QE
@@ -156,7 +195,9 @@ scorer does better". On this set the best local model (Qwen3.8 27B, review mode)
 and 7% flags on unperturbed strings, so the first part does not hold and the criterion is **not met**: the model-assisted review is not parked
 on this evidence. This is a statement about planted errors written or generated by the benchmark
 author, in one app and three languages. It says nothing about precision on real errors, and the translations
-the models review were never checked by native speakers. No QE scorer was run, so the second part is untested (it matters only if the first part holds).
+the models review were never checked by native speakers. The second part, "no QE scorer does better", holds on this set: MetricX-24 at a threshold that flags 7% of the controls
+recovers 0% to 78% of the kinds, far below Qwen's review at the same rate, though its threshold is in-sample (see above) and it was not
+built for these rule-based kinds. Both parts must hold to park, and only the second does.
 
 ## What a native reviewer should check
 

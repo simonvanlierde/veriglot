@@ -140,6 +140,12 @@ veriglot bench run data/bench/items.jsonl --out data/bench/runs/m1 --base-url ht
 veriglot bench score data/bench/items.jsonl data/bench/runs/m1
 ```
 
+`bench run` appends each answer as it arrives, asks again for failed ones when rerun into the same `--out`
+(and refuses a different model, prompt or items there), and exits 3 if any answer failed. A MetricX-24
+quality-estimation baseline comes from `uv run scripts/metricx_qe.py` (it needs a GPU and a checkout of
+google-research/metricx; see its docstring) and is tabulated with `bench score ITEMS --qe DIR`.
+Call logs end in `.log.jsonl` and are git-ignored; each starts with the canary line.
+
 ## Development
 
 Install uv and just, then run:

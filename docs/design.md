@@ -120,5 +120,6 @@ Flat JSON catalogs are check-only. The per-locale review-status sidecar is not b
   Placeholder, plural, tag and syntax defects belong to the deterministic checks.
 - `bench` plants errors in clean translations (seeded perturbations, plus hand-written ones for
   language-dependent kinds) and scores recall per kind for the review prompt and a direct-judge
-  baseline. A model never judges its own translation, and its scores are not a substitute for
-  native review; see [the benchmark](benchmark.md).
+  baseline, and tabulates a MetricX quality-estimation scorer at matched flag rates. Model scores
+  are not a substitute for native review, and the benchmark does not record who wrote the translations
+  it uses, so it cannot exclude a model judging its own output; see [the benchmark](benchmark.md).

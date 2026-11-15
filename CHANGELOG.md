@@ -6,6 +6,8 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 
 ### Added
 
+- `veriglot review-model` reviews translations with a model on any chat-completions server and reports `meaning`, `omission`, `addition`, `terminology`, `register`, `grammar` and `untranslated` findings in the same type, CSV and `apply` step as `check`; calls are constrained, validated, retried once and logged with the prompt hash.
+- `veriglot bench make`, `run` and `score` build a planted-error benchmark, run a model in review and direct-judge modes, and report recall per error kind with Wilson intervals; results are in `docs/benchmark.md`.
 - `veriglot check` compares target catalogs (Lingui `.po`, flat JSON) with their source catalog and reports missing, extra and untranslated keys, placeholder, plural and select, tag, whitespace and ICU syntax problems, as text, JSON or a review CSV.
 - `veriglot apply` writes accepted and edited CSV decisions into a `.po` catalog and accounts for every row; stale, unknown, invalid and vendored rows are rejected, never applied.
 - `veriglot check` reports entries marked `#, fuzzy` (info), a plural branch that drops `#` or a placeholder its source branch has (warning), and per-branch tag differences; `veriglot apply` drops the `fuzzy` flag from entries it writes.

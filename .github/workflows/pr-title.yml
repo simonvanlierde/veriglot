@@ -19,6 +19,11 @@ jobs:
     name: pull request title
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # As in python.yml: uv checks every package against OSV's malware advisories before
+      # its code runs. The preview flag only silences the "experimental" warning.
+      UV_MALWARE_CHECK: "1"
+      UV_PREVIEW_FEATURES: malware-check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -26,14 +31,18 @@ jobs:
           sparse-checkout: committed.toml
           sparse-checkout-cone-mode: false
 
+<<<<<<< before updating
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+=======
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+>>>>>>> after updating
         with:
           # This workflow runs on pull requests only, and a cache a pull request saves is
           # readable by that pull request alone. committed is one small wheel.
           enable-cache: false
-          version: "0.13.1"
+          version: "0.13.6"
 
       - name: check the title
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$TITLE" | uvx committed@1.1.11 --config committed.toml --commit-file -
+        run: printf '%s\n' "$TITLE" | uvx --exclude-newer "1 week" committed@1.1.11 --config committed.toml --commit-file -

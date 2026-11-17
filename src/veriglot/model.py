@@ -140,7 +140,8 @@ def _http(url: str, body: dict[str, Any] | None, timeout: float) -> dict[str, An
         with opener.open(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(300).decode("utf-8", "replace")
+        with exc:  # releases the socket
+            detail = exc.read(300).decode("utf-8", "replace")
         what = "redirect not followed" if 300 <= exc.code < 400 else "error"
         msg = f"HTTP {exc.code} ({what}) from the model server: {detail}"
         raise OSError(msg) from exc

@@ -311,6 +311,7 @@ def local_server():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}"
     server.shutdown()
+    server.server_close()
 
 
 def test_loopback_requests_ignore_proxy_variables(local_server: str, monkeypatch: pytest.MonkeyPatch):

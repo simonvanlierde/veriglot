@@ -38,17 +38,23 @@ jobs:
 
       # Saved off pull requests only: a cache a pull request saves is readable by that
       # pull request alone, and it pushes main's entries out of the 10 GB per-repo limit.
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           save-cache: ${{ github.event_name != 'pull_request' }}
-          version: "0.13.1"
+          version: "0.13.6"
 
       - run: uv sync --locked
       # Checks every locked dependency, dev group included, against the OSV database
       # for known vulnerabilities and deprecated or quarantined projects. Still
       # experimental in uv, hence the preview flag.
       - run: uv audit --locked --preview-features audit-command
+      # Lists the license of each locked package that ships (no dependency groups), read
+      # from the installed metadata, and fails on one licensecheck's compatibility table
+      # says the license in pyproject.toml cannot take. With no runtime dependencies there
+      # is nothing to check, and licensecheck --zero would fail on the empty list.
+      - run: uv export --locked --no-default-groups --no-hashes --no-annotate --no-header --no-emit-project -q -o "$RUNNER_TEMP/requirements.txt"
+      - run: test ! -s "$RUNNER_TEMP/requirements.txt" || uv run --locked --with licensecheck==2026.0.8 licensecheck -r "$RUNNER_TEMP/requirements.txt" --zero
 
       - run: uv run ruff check --output-format=github
       - run: uv run ruff format --check

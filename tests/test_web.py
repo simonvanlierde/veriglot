@@ -198,8 +198,11 @@ def test_review_command_serves_and_prints_url(target: Path):
             assert "#token=" in url
             host_port = url.split("/")[2]
             conn = http.client.HTTPConnection(host_port)
-            conn.request("GET", "/")
-            assert conn.getresponse().status == 200
+            try:
+                conn.request("GET", "/")
+                assert conn.getresponse().status == 200
+            finally:
+                conn.close()
         finally:
             proc.terminate()
 

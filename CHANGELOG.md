@@ -6,26 +6,21 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 
 ### Added
 
-- `veriglot review-model --format jsonl` prints each finding as its entry is answered and a summary line last; a terminal shows `reviewed N/M` progress on stderr; a rerun with the same `--log` reuses the answers there (matched by a new `request_sha256` log field) and asks only for the rest.
+- `veriglot review-model --format jsonl` prints each finding as its entry is answered, in completion order, and a summary line last; a terminal shows `reviewed N/M` progress on stderr, except with `--format json` or `jsonl`; a rerun given `--log` explicitly reuses the answers in that log (matched by a new `request_sha256` log field) and asks only for the rest; Ctrl-C or a failed run under `--format json` keeps the findings answered so far.
 - `veriglot kinds` lists the finding kinds, their severity and the command that reports them; `bench score --format json` prints the score cells.
 - `src/veriglot/findings.schema.json` describes the `check` and `review-model` JSON and JSON Lines output.
 - `veriglot review-model` reviews translations with a model on any chat-completions server and reports `meaning`, `omission`, `addition`, `terminology`, `register`, `grammar` and `untranslated` findings in the same type, CSV and `apply` step as `check`; calls are constrained, validated, retried once and logged with the prompt hash.
 - `bench score --qe` tabulates a MetricX-24 quality-estimation baseline (`scripts/metricx_qe.py`) at matched flag rates.
-- `veriglot bench make`, `run` and `score` build a planted-error benchmark, run a model in review and direct-judge modes, and report recall per error kind with Wilson intervals; results are in `docs/benchmark.md`.
+- `veriglot bench make`, `run` and `score` build a planted-error benchmark, run a model in review and direct-judge modes, and report recall per error kind with Wilson intervals; results are in `docs/benchmark.md`. `make` and `run` print a JSON object with `schema_version` and `errors` (`make`: the items `path` and the counts under `items`; `run`: the manifest with `run_dir`), and an unknown `--modes` value or `score` without runs or `--qe` is a usage error (exit 2).
 - `veriglot check` compares target catalogs (Lingui `.po`, flat JSON) with their source catalog and reports missing, extra and untranslated keys, placeholder, plural and select, tag, whitespace and ICU syntax problems, as text, JSON or a review CSV.
 - `veriglot apply` writes accepted and edited CSV decisions into a `.po` catalog and accounts for every row; stale, unknown, invalid and vendored rows are rejected, never applied.
 - `veriglot check` reports entries marked `#, fuzzy` (info), a plural branch that drops `#` or a placeholder its source branch has (warning), and per-branch tag differences; `veriglot apply` drops the `fuzzy` flag from entries it writes.
 - `veriglot review SOURCE TARGET...` serves a local web page on 127.0.0.1 to filter findings, edit, accept or reject them and save through the same apply code as `veriglot apply`, with CSV export and import.
 - Python development scaffold and [review design](docs/design.md), including the planned CSV and local web review interfaces.
 
-### Changed
-
-- `bench make` and `bench run` print a JSON object with `schema_version` and `errors`: the counts per language and kind moved under `items`, next to the items `path`; the run manifest gains `run_dir`.
-
 ### Fixed
 
 - The JSON printed when a command fails keeps the success shape (`findings: []` for `check` and `review-model`), and Ctrl-C with `--format json` or `jsonl` prints the object too.
-- An unknown `bench run --modes` value, and `bench score` without runs or `--qe`, exit 2 as usage errors instead of 3.
 - `veriglot apply` rejects a later row of a model kind on an entry an earlier row changed as stale, instead of skipping it as resolved.
 - Model calls retry with a doubled `max_tokens` after a length stop, treat `http.client` errors as recorded failures, ignore proxy variables and redirects for loopback servers, and JSON-encode catalog text in the prompts; `--extra-body` must be a JSON object.
 - `bench run` keeps answers as they arrive, retries failed items on rerun, refuses to mix runs and exits 3 on failures; `bench score` checks the items hash.

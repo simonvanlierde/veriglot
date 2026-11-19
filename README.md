@@ -49,7 +49,7 @@ Branches are compared one by one with the source branch of the same key, else wi
 source `other` branch, so a locale may have more or fewer plural categories than the source.
 
 Exit code 0 means no error findings, 1 means some, 2 is a usage error and 3 means a file
-could not be read or is malformed (the message names the line).
+could not be read or is malformed (the message names the line); 130 means it was interrupted.
 
 To apply a review, fill in the `decision` column of the CSV (`accept` writes `proposed`,
 `edit` writes `edited`, `reject` or empty leaves the entry) and run:
@@ -105,14 +105,17 @@ veriglot review-model src/locales/en/messages.po src/locales/nl/messages.po \
   retried once. An entry that still fails is reported on stderr and in the JSON `errors`, and the
   exit code is 3.
 - Every call is appended to `--log` (default `veriglot-model.log.jsonl`): model, server version,
-  prompt name and SHA-256, a `request_sha256` of the model, settings, schema and rendered prompt,
-  attempt, finish reason, token counts and the raw answer.
-- A rerun with the same `--log` reuses every answer there whose `request_sha256` matches and asks only
-  for the rest, so a stopped or partly failed run resumes. A changed entry, glossary, prompt, model or
-  setting is asked again. Use a new `--log` for a fresh run.
-- `--format jsonl` prints each finding as one line as soon as its entry is answered, then a summary
-  line with `schema_version`, `total`, `counts` per severity and `errors`. When stderr is a terminal
-  and the format is not `json` or `jsonl`, `reviewed N/M` shows progress there.
+  prompt name and SHA-256, a `request_sha256` of the base URL, server version, model, settings, schema
+  and rendered prompt, attempt, finish reason, token counts and the raw answer.
+- A run given `--log` explicitly reuses every successful answer in that log whose `request_sha256`
+  matches and asks only for the rest, so a stopped or partly failed run resumes when rerun with the same
+  `--log`. A changed entry, glossary, prompt, server, model or setting is asked again. Without `--log`,
+  nothing is reused.
+- `--format jsonl` prints each finding as one line as soon as its entry is answered, in completion
+  order, then a summary line with `schema_version`, `total`, `counts` per severity and `errors`. When
+  stderr is a terminal and the format is not `json` or `jsonl`, `reviewed N/M` shows progress there.
+  On Ctrl-C (exit 130) or a run that cannot go on (exit 3), `--format json` still prints the findings
+  answered so far.
 - `--with-checks` merges the deterministic findings. Placeholder, plural, tag and syntax problems
   stay with those checks; the prompt tells the model not to report them.
 - `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'` adds request fields, for

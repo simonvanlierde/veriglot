@@ -3,8 +3,11 @@ import http.client
 import http.server
 import io
 import json
+import signal
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -436,9 +439,130 @@ def test_cli_resume_asks_again_for_a_changed_entry(
     capsys.readouterr()
 
 
-def test_resume_skips_a_cut_off_log_line(tmp_path: Path):
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"outcome": "ok", "request_sha',  # cut inside the JSON
+        '{"outcome": "ok", "request_sha256": "cut", "content": "\u00e9'.encode()[:-1],  # cut inside a character
+        b"[1, 2]",  # JSON, but not an object
+    ],
+)
+def test_resume_skips_a_cut_off_log_line_and_appends_on_a_new_line(tmp_path: Path, tail: bytes):
     log = tmp_path / "log.jsonl"
-    log.write_text('{"canary": "x"}\n{"outcome": "ok", "request_sha', encoding="utf-8")
-    c = ModelClient(BASE, "m", log_path=log, transport=Fake())
+    kept = {"outcome": "ok", "request_sha256": "abc", "content": json.dumps(GOOD)}
+    failed = {"outcome": "failed", "request_sha256": "def", "content": json.dumps(GOOD)}
+    log.write_bytes(
+        b'{"canary": "x"}\n' + json.dumps(kept).encode() + b"\n" + json.dumps(failed).encode() + b"\n" + tail
+    )
+    c = client(Fake(answer(GOOD)), tmp_path)
+    c.log_path = log
     c.load_answers()
-    assert c.answers == {}
+    assert c.answers == {"abc": kept["content"]}  # a failed call is never reused, even with valid content
+    review(c)
+    last = log.read_bytes().splitlines()[-1]
+    assert json.loads(last)["outcome"] == "ok"  # the new record is not glued onto the cut line
+
+
+def _fake_models(monkeypatch: pytest.MonkeyPatch, *replies: dict) -> Fake:
+    fake = Fake({"data": [{"id": "m"}, {"id": "m2"}]}, {"version": "9"}, *replies)
+    monkeypatch.setattr(model_mod, "_http", lambda url, body, _timeout: fake(url, body))
+    return fake
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ["--model", "m2"],
+        ["--temperature", "0.5"],
+        ["--glossary", "GLOSSARY"],
+        ["--extra-body", '{"chat_template_kwargs": {"enable_thinking": false}}'],
+        ["--base-url", "http://localhost:8000/v1"],
+    ],
+    ids=["model", "temperature", "glossary", "extra-body", "base-url"],
+)
+def test_cli_rerun_with_other_settings_asks_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], change: list[str]
+):
+    glossary = tmp_path / "g.toml"
+    glossary.write_text('[style]\nnl = "Address the user formally."\n', encoding="utf-8")
+    first = _fake_models(monkeypatch, *[answer(GOOD)] * 40)
+    main(_model_argv(tmp_path, "--format", "json"))
+    entries = _completions(first)
+    same = _fake_models(monkeypatch)
+    main(_model_argv(tmp_path, "--format", "json"))
+    assert _completions(same) == 0  # the control: an unchanged rerun reuses every answer
+    changed = _fake_models(monkeypatch, *[answer(GOOD)] * 40)
+    main(_model_argv(tmp_path, "--format", "json", *[str(glossary) if c == "GLOSSARY" else c for c in change]))
+    assert _completions(changed) == entries
+    capsys.readouterr()
+
+
+def test_cli_does_not_reuse_answers_without_an_explicit_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.chdir(tmp_path)
+    argv = ["review-model", EN, NL, "--base-url", BASE, "--model", "m", "--format", "json"]
+    first = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    assert (tmp_path / "veriglot-model.log.jsonl").exists()
+    again = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    assert _completions(again) == _completions(first)
+    assert "reused" not in capsys.readouterr().err
+
+
+def test_cli_jsonl_with_concurrency_prints_whole_lines_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    argv = _model_argv(tmp_path, "--format", "jsonl", "--with-checks")
+    argv[argv.index("--concurrency") + 1] = "4"
+    main(argv)
+    *lines, summary = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    ids = [f["id"] for f in lines]
+    assert len(ids) == len(set(ids)) == summary["total"]
+
+
+SLOW_RUN = """
+import json, signal, sys, time
+from veriglot import model
+from veriglot.cli import main
+
+signal.signal(signal.SIGINT, signal.default_int_handler)  # a parent may have ignored SIGINT
+
+
+def http(url, body, timeout):
+    if body is None:
+        return {"data": [{"id": "m"}]} if url.endswith("/models") else {"version": "9"}
+    time.sleep(0.5)
+    content = json.dumps(GOOD)
+    return {"choices": [{"finish_reason": "stop", "message": {"content": content}}], "usage": {}}
+
+
+model._http = http
+sys.exit(main(sys.argv[1:]))
+"""
+
+
+def test_ctrl_c_stops_at_once_and_keeps_the_answers_so_far(tmp_path: Path):
+    script = tmp_path / "slow.py"
+    script.write_text(f"GOOD = {GOOD!r}\n" + SLOW_RUN, encoding="utf-8")
+    log = tmp_path / "calls.log.jsonl"
+    argv = ["review-model", EN, NL, "--base-url", BASE, "--model", "m", "--log", str(log), "--format", "json"]
+    proc = subprocess.Popen(  # noqa: S603
+        [sys.executable, str(script), *argv, "--concurrency", "2"], stdout=subprocess.PIPE, text=True
+    )
+
+    def answered() -> int:
+        return log.read_bytes().count(b'"outcome": "ok"') if log.exists() else 0
+
+    deadline = time.monotonic() + 20
+    while answered() < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    proc.send_signal(signal.SIGINT)
+    out, _ = proc.communicate(timeout=20)
+    assert proc.returncode == -signal.SIGINT
+    data = json.loads(out)
+    assert data["errors"][-1]["message"] == "interrupted"
+    assert data["findings"]  # the answers already in
+    assert answered() < 6  # of 10 entries: queued calls were cancelled, not waited for

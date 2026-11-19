@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/simonvanlierde/veriglot/blob/main/src/veriglot/findings.schema.json",
+  "$id": "https://raw.githubusercontent.com/simonvanlierde/veriglot/main/src/veriglot/findings.schema.json",
   "title": "veriglot findings",
   "description": "Output of `veriglot check --format json` and `veriglot review-model --format json`. With `--format jsonl`, review-model prints one `#/$defs/finding` per line and a `#/$defs/summary` last. Fields may be added without a new schema_version.",
   "type": "object",

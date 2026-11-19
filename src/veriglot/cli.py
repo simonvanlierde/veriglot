@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from veriglot.catalog import Catalog
 
 SCHEMA_VERSION = 1
+DEFAULT_LOG = Path("veriglot-model.log.jsonl")
 MAX_PORT = 65535
 
 EPILOG = """\
@@ -33,7 +34,8 @@ exit codes:
   0  no error findings (check) or no rejected decisions (apply)
   1  error findings, or rejected decisions
   2  usage error
-  3  could not run: unreadable file, bad catalog or decisions CSV
+  3  could not run: unreadable file, bad catalog or decisions CSV, or a model call failed
+  130  interrupted (Ctrl-C)
 """
 
 
@@ -217,8 +219,8 @@ def _model_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--log",
         type=Path,
-        default=Path("veriglot-model.log.jsonl"),
-        help="per-call JSON Lines log (bench run logs into its run directory)",
+        help=f"per-call JSON Lines log (default {DEFAULT_LOG}); review-model reuses the answers in a log "
+        "given here, and bench run logs into its run directory",
     )
 
 
@@ -237,7 +239,7 @@ def _json_object(text: str) -> dict[str, object]:
 def _client(args: argparse.Namespace) -> model_mod.ModelClient:
     model_mod.check_endpoint(args.base_url, allow_remote=args.allow_remote)
     settings = model_mod.Settings(args.temperature, args.seed, args.max_tokens, args.constraint, args.extra_body)
-    client = model_mod.ModelClient(args.base_url, args.model, settings=settings, log_path=args.log)
+    client = model_mod.ModelClient(args.base_url, args.model, settings=settings, log_path=args.log or DEFAULT_LOG)
     client.preflight()
     return client
 
@@ -259,7 +261,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return commands[args.command](args)
     except KeyboardInterrupt:
-        _print_failure(args, "interrupted", RESUME_HELP.get(args.command))
+        _print_failure(args, "interrupted", "rerun into the same --out to resume" if args.command == "bench" else None)
         print("interrupted", file=sys.stderr)
         sys.stdout.flush()
         signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -271,12 +273,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3
 
 
-RESUME_HELP = {
-    "review-model": "rerun with the same --log to reuse the answers so far",
-    "bench": "rerun into the same --out to resume",
-}
-
-
 def _envelope(errors: Sequence[dict[str, str | None]] = (), **fields: object) -> dict[str, object]:
     """The one JSON shape of every command: ``schema_version``, the command's fields, then ``errors``."""
     return {"schema_version": SCHEMA_VERSION, **fields, "errors": list(errors)}
@@ -285,7 +281,7 @@ def _envelope(errors: Sequence[dict[str, str | None]] = (), **fields: object) ->
 def _print_failure(args: argparse.Namespace, message: str, help_text: str | None) -> None:
     """Print the envelope of a run that stopped, with the fields the command's success output has."""
     fmt = getattr(args, "format", None)
-    if fmt not in ("json", "jsonl"):
+    if fmt not in ("json", "jsonl") or getattr(args, "reported", False):
         return
     fields: dict[str, object] = {}
     if fmt == "json" and args.command in ("check", "review-model"):
@@ -332,7 +328,8 @@ def _review_model(args: argparse.Namespace) -> int:
     read_only = tuple(args.read_only)
     targets = _model_targets(args.source, args.targets)
     client = _client(args)
-    client.load_answers()
+    if args.log is not None:
+        client.load_answers()
     prompt = model_mod.load_prompt("review")
     det = {t.locale: check_catalogs(source, t, read_only) if args.with_checks else [] for t in targets}
     seen = {f.id for found in det.values() for f in found}
@@ -344,28 +341,54 @@ def _review_model(args: argparse.Namespace) -> int:
     ]
     if args.format == "jsonl":
         _print_lines(f for found in det.values() for f in found)
-    results = _ask_all(
-        lambda e: model_mod.review_entry(client, prompt, glossary, *e),
-        entries,
-        args.concurrency,
-        stream=args.format == "jsonl",
-        seen=seen,
-        progress=sys.stderr.isatty() and args.format not in ("json", "jsonl"),
-    )
-    findings: list[Finding] = []
-    for t in targets:
-        findings += det[t.locale]
-        findings += [f for e in entries if e[0] == t.locale for f in results[e].findings if f.id not in seen]
-    errors: list[dict[str, str | None]] = [
-        {"message": f"{e[0]}:{e[1]}: {results[e].failure}", "help": "see the call log"}
-        for e in entries
-        if results[e].failure
-    ]
+    results: dict[_Entry, model_mod.EntryReview] = {}
+    try:
+        _ask_all(
+            lambda e: model_mod.review_entry(client, prompt, glossary, *e),
+            entries,
+            args.concurrency,
+            results,
+            stream=args.format == "jsonl",
+            seen=seen,
+            progress=sys.stderr.isatty() and args.format not in ("json", "jsonl"),
+        )
+    except (KeyboardInterrupt, OSError, ValueError, RuntimeError) as exc:
+        if args.format in ("json", "jsonl"):
+            # The answers so far go out with the error; main() then prints only its stderr line.
+            findings, errors = _collect(targets, det, entries, results, seen)
+            message = "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)
+            log = _show((args.log or DEFAULT_LOG).as_posix())
+            errors.append({"message": message, "help": f"rerun with --log {log} to reuse the answers so far"})
+            _emit(findings, args.format, errors)
+            args.reported = True
+        raise
+    findings, errors = _collect(targets, det, entries, results, seen)
     if client.reused:
-        print(f"reused {client.reused} answers from {args.log.as_posix()}", file=sys.stderr)
+        print(f"reused {client.reused} answers from {_show(args.log.as_posix())}", file=sys.stderr)
     for e in errors:
         print(f"error: {e['message']}", file=sys.stderr)
     return _emit(findings, args.format, errors)
+
+
+def _collect(
+    targets: list[Catalog],
+    det: dict[str, list[Finding]],
+    entries: list[_Entry],
+    results: dict[_Entry, model_mod.EntryReview],
+    seen: set[str],
+) -> tuple[list[Finding], list[dict[str, str | None]]]:
+    """Findings per target in catalog order, and one error per failed entry; unanswered entries are left out."""
+    answered = [e for e in entries if e in results]
+    findings: list[Finding] = []
+    for t in targets:
+        findings += det[t.locale]
+        findings += [f for e in answered if e[0] == t.locale for f in results[e].findings if f.id not in seen]
+    errors: list[dict[str, str | None]] = [
+        {"message": f"{e[0]}:{e[1]}: {results[e].failure}", "help": "see the call log"}
+        for e in answered
+        if results[e].failure
+    ]
+    return findings, errors
 
 
 def _model_targets(source_path: Path, paths: Sequence[Path]) -> list[Catalog]:
@@ -389,13 +412,16 @@ def _ask_all(
     review: Callable[[_Entry], model_mod.EntryReview],
     entries: list[_Entry],
     concurrency: int,
+    results: dict[_Entry, model_mod.EntryReview],
     *,
     stream: bool,
     seen: set[str],
     progress: bool,
-) -> dict[_Entry, model_mod.EntryReview]:
-    """Review every entry; print each finding as it arrives (``stream``) and ``N/M`` on stderr (``progress``)."""
-    results: dict[_Entry, model_mod.EntryReview] = {}
+) -> None:
+    """Review every entry into ``results``, which keeps the answers so far when the run stops.
+
+    ``stream`` prints each finding as it arrives, in completion order; ``progress`` shows ``N/M`` on stderr.
+    """
     pairs = model_mod.iter_concurrently(lambda e: (e, review(e)), entries, concurrency)
     for done, (entry, r) in enumerate(pairs, 1):
         results[entry] = r
@@ -405,7 +431,6 @@ def _ask_all(
             print(f"\rreviewed {done}/{len(entries)}", end="", file=sys.stderr, flush=True)
     if progress:
         print(file=sys.stderr)
-    return results
 
 
 def _print_lines(findings: Iterable[Finding]) -> None:
@@ -457,7 +482,7 @@ def _bench(args: argparse.Namespace) -> int:
         )
         failed = sum(manifest["failed"].values())
         message = f"{failed} answers failed the schema twice"
-        errors: list[dict[str, str | None]] = [{"message": message, "help": RESUME_HELP["bench"]}] if failed else []
+        errors: list[dict[str, str | None]] = [{"message": message, "help": "rerun to retry them"}] if failed else []
         print(json.dumps(_envelope(errors, run_dir=args.out.as_posix(), **manifest), indent=2))
         if failed:
             print(f"error: {message}; rerun to retry them", file=sys.stderr)

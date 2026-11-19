@@ -10,6 +10,7 @@ Every call is logged with the model, server version, prompt hash, settings and t
 import hashlib
 import http.client
 import json
+import os
 import re
 import threading
 import time
@@ -38,6 +39,7 @@ MODEL_KINDS = (Kind.MEANING, Kind.OMISSION, Kind.ADDITION, Kind.TERMINOLOGY, Kin
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 _SEVERITY_ORDER = [Severity.INFO, Severity.WARNING, Severity.ERROR]
 CONSTRAINTS = ("structured_outputs", "response_format", "none")
+NEWLINE = b"\n"
 
 type Transport = Callable[[str, dict[str, Any] | None], dict[str, Any]]
 """``transport(url, body)``: POST ``body`` as JSON, or GET when ``body`` is None; returns the parsed JSON."""
@@ -198,22 +200,31 @@ class ModelClient:
     def load_answers(self) -> None:
         """Reuse the successful answers already in the call log, so a stopped run resumes.
 
-        Only a call with the same model, settings, schema and rendered prompt is reused, so a
-        changed catalog entry, glossary or prompt is asked again. Lines that are not JSON, such as
-        a line cut off when the run stopped, are skipped.
+        Only a call with the same server, server version, model, settings, schema and rendered
+        prompt is reused, so a changed catalog entry, glossary or prompt is asked again. Lines that
+        are not a JSON object, such as a line cut off when the run stopped, are skipped.
         """
         if self.log_path is None or not self.log_path.exists():
             return
-        for line in self.log_path.read_text(encoding="utf-8").splitlines():
+        for line in self.log_path.read_bytes().splitlines():
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+                entry = json.loads(line.decode("utf-8"))
+            except UnicodeDecodeError, json.JSONDecodeError:
                 continue
-            if entry.get("outcome") == "ok" and entry.get("request_sha256") and entry.get("content"):
-                self.answers[entry["request_sha256"]] = entry["content"]
+            if not isinstance(entry, dict) or entry.get("outcome") != "ok" or not entry.get("request_sha256"):
+                continue
+            if isinstance(content := entry.get("content"), str) and content:
+                self.answers[entry["request_sha256"]] = content
 
     def _request_sha256(self, text: str, schema: type[BaseModel]) -> str:
-        request = {"model": self.model, "schema": schema.__name__, "settings": asdict(self.settings), "prompt": text}
+        request = {
+            "base_url": self.base_url,
+            "server_version": self.server_version,
+            "model": self.model,
+            "schema": schema.__name__,
+            "settings": asdict(self.settings),
+            "prompt": text,
+        }
         return hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
 
     def _body(self, prompt_text: str, schema: type[BaseModel], attempt: int, max_tokens: int) -> dict[str, Any]:
@@ -324,12 +335,15 @@ class ModelClient:
             "error": error,
             **record,
         }
-        with self._lock:
-            new = not self.log_path.exists()
-            with self.log_path.open("a", encoding="utf-8", newline="\n") as f:
-                if new:
-                    f.write(json.dumps({"canary": CANARY}) + "\n")
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # Appends always go to the end, wherever f.seek points.
+        with self._lock, self.log_path.open("a+b") as f:
+            if f.seek(0, os.SEEK_END) == 0:
+                f.write((json.dumps({"canary": CANARY}) + "\n").encode())
+            else:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != NEWLINE:
+                    f.write(NEWLINE)  # a stopped run can leave its last line without one
+            f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode())
 
 
 @dataclass(frozen=True)
@@ -491,19 +505,18 @@ def judge_entry(
 
 
 def iter_concurrently[T, R](func: Callable[[T], R], items: Sequence[T], concurrency: int) -> Iterator[R]:
-    """Yield ``func(item)`` as each call finishes (input order when ``concurrency`` is 1)."""
+    """Yield ``func(item)`` as each call finishes (input order when ``concurrency`` is 1).
+
+    When the caller stops early (Ctrl-C, an error), queued calls are cancelled and running
+    ones are not waited for.
+    """
     if concurrency <= 1:
         for item in items:
             yield func(item)
         return
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+    pool = ThreadPoolExecutor(max_workers=concurrency)
+    try:
         for future in as_completed([pool.submit(func, i) for i in items]):
             yield future.result()
-
-
-def map_concurrently[T, R](func: Callable[[T], R], items: Sequence[T], concurrency: int) -> list[R]:
-    """``func`` over ``items`` with up to ``concurrency`` calls at once, results in input order."""
-    if concurrency <= 1:
-        return [func(i) for i in items]
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        return list(pool.map(func, items))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)

@@ -1,6 +1,7 @@
 import json
 import math
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,7 +17,6 @@ from veriglot.cli import main
 if TYPE_CHECKING:
     import random
     from collections.abc import Callable
-    from pathlib import Path
 
 BASE = "http://127.0.0.1:8000/v1"
 
@@ -262,8 +262,11 @@ def test_cli_bench_make_and_score(tmp_path: Path, capsys: pytest.CaptureFixture[
         main(["bench", "make", str(tmp_path / "en.po"), str(tmp_path / "nl.po"), "--out", str(out), "--controls", "2"])
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["nl"]["clean"] == 2
-    assert (out / "items.jsonl").exists()
+    made = json.loads(capsys.readouterr().out)
+    assert (made["schema_version"], made["errors"]) == (1, [])
+    assert made["items"]["nl"]["clean"] == 2
+    assert Path(made["path"]) == out / "items.jsonl"
+    assert Path(made["path"]).exists()
 
 
 def test_untranslated_needs_enough_source_words_for_the_span():
@@ -384,7 +387,7 @@ def test_runs_with_the_same_directory_name_get_distinct_columns(tmp_path: Path, 
 
 
 def test_cli_bench_run_exits_nonzero_when_an_answer_failed(
-    tmp_path: Path, catalogs: Cats, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, catalogs: Cats, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     items = _make(tmp_path, catalogs)
     replies = [{"data": [{"id": "m"}]}, {"version": "1"}]
@@ -398,6 +401,47 @@ def test_cli_bench_run_exits_nonzero_when_an_answer_failed(
     monkeypatch.setattr(model_mod, "_http", http)
     argv = ["bench", "run", str(items), "--out", str(tmp_path / "run"), "--base-url", BASE, "--model", "m"]
     assert main([*argv, "--modes", "judge"]) == 3
+    data = json.loads(capsys.readouterr().out)
+    assert data["schema_version"] == 1
+    assert data["failed"] == {"judge": data["n_items"]}
+    assert data["errors"][0]["message"] == f"{data['n_items']} answers failed the schema twice"
+    assert data["run_dir"] == (tmp_path / "run").as_posix()
+
+
+def test_cli_bench_run_unknown_mode_is_a_usage_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    argv = ["bench", "run", str(tmp_path / "i.jsonl"), "--out", str(tmp_path), "--base-url", BASE, "--model", "m"]
+    with pytest.raises(SystemExit) as exc:
+        main([*argv, "--modes", "review,jduge"])
+    assert exc.value.code == 2
+    assert "unknown mode 'jduge'" in capsys.readouterr().err
+
+
+def test_cli_bench_score_without_runs_or_qe_is_a_usage_error(tmp_path: Path):
+    with pytest.raises(SystemExit) as exc:
+        main(["bench", "score", str(tmp_path / "i.jsonl")])
+    assert exc.value.code == 2
+
+
+def test_cli_bench_score_json(tmp_path: Path, catalogs: Cats, capsys: pytest.CaptureFixture[str]):
+    items = _make(tmp_path, catalogs)
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    bench.run(items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    qe = tmp_path / "qe"
+    bench.write_jsonl(qe / "scores.jsonl", ({"id": i.id, "score": 1.0} for i in bench.read_items(items)))
+    argv = ["bench", "score", str(items), str(tmp_path / "run"), "--qe", str(qe), "--qe-rate", "0.5"]
+    assert main([*argv, "--format", "json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert (data["schema_version"], data["errors"], data["locale"]) == (1, [], "all")
+    (column,) = data["runs"]
+    assert (column["run"], column["mode"]) == ("run", "judge")
+    clean = next(c for c in column["cells"] if c["kind"] == "clean")
+    assert (clean["k"], clean["n"], clean["rate"]) == (0, 2, 0.0)
+    assert clean["interval"][0] == 0.0
+    assert data["qe"][0]["rate"] == 0.5
+    assert data["qe"][0]["cells"]
 
 
 def test_bench_run_warns_when_the_output_is_not_git_ignored(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -440,3 +484,53 @@ def test_qe_table_and_cli_read_scores_and_check_the_items_hash(tmp_path: Path, c
     out = capsys.readouterr().out
     assert "score > 7.00 (target 20%)" in out
     assert "2/4 = 50%" in out
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"id": "nl:k',  # cut inside the JSON
+        '{"id": "é'.encode()[:-1],  # cut inside a character
+        b"[1, 2]\n",  # JSON, but not an object
+        None,  # the last answer lost, and the one before it lost its newline
+    ],
+    ids=["cut-json", "cut-character", "not-an-object", "no-newline"],
+)
+def test_resume_repairs_a_cut_last_answer(tmp_path: Path, catalogs: Cats, tail: bytes | None):
+    items = _make(tmp_path, catalogs)
+    calls = []
+
+    def good(_url: str, _body: dict | None) -> dict:
+        calls.append(1)
+        return judge_reply(correct=True)
+
+    args = (items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo())
+    bench.run(*args, modes=("judge",), concurrency=1)
+    answers = tmp_path / "run/judge.jsonl"
+    head = b"".join(answers.read_bytes().splitlines(keepends=True)[:-1])
+    answers.write_bytes(head.rstrip(b"\n") if tail is None else head + tail)
+    calls.clear()
+    second = bench.run(*args, modes=("judge",), concurrency=1)
+    assert len(calls) == 1  # only the item whose answer was lost
+    assert second["failed"] == {"judge": 0}
+    answered = bench.read_jsonl(answers)  # strict again: every line is whole
+    assert len({r["id"] for r in answered}) == len(answered) == second["n_items"]
+
+
+def test_items_file_with_a_cut_last_line_stays_an_error(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+    items.write_bytes(items.read_bytes() + b'{"id": "nl:k')
+    with pytest.raises(json.JSONDecodeError):
+        bench.read_items(items)
+
+
+def test_resume_after_a_cut_canary_starts_the_file_again(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run/judge.jsonl").write_bytes(b'{"cana')
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    result = bench.run(items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    assert len(bench.read_jsonl(tmp_path / "run/judge.jsonl")) == result["n_items"]

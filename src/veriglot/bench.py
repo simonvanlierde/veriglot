@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from veriglot.canary import CANARY
+from veriglot.canary import CANARY, append_jsonl, json_object
 from veriglot.catalog import Catalog, is_read_only
 from veriglot.model import (
     Glossary,
@@ -118,16 +118,6 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def append_jsonl(path: Path, record: dict[str, Any]) -> None:
-    """Append one record; a new file starts with the canary."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    new = not path.exists()
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        if new:
-            f.write(json.dumps({"canary": CANARY}) + "\n")
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     """Read JSON Lines, skipping the canary line.
 
@@ -139,6 +129,24 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         msg = f"{path.as_posix()}: first line is not the benchmark canary"
         raise ValueError(msg)
     return [json.loads(line) for line in lines[1:] if line.strip()]
+
+
+def repair_last_line(path: Path) -> None:
+    """Drop a last line that a stopped run cut off, or that is not a JSON object.
+
+    Only for an answers file about to be appended to: items and scores files stay strict.
+    """
+    data = path.read_bytes()
+    body = data.rstrip(b"\n")
+    start = body.rfind(b"\n") + 1
+    if json_object(body[start:]) is not None:
+        return
+    sys.stderr.write(f"warning: dropped a cut-off last line from {path.as_posix()}; that item is asked again\n")
+    if start == 0:
+        path.unlink()  # only the canary line was there, and it was cut
+        return
+    with path.open("r+b") as f:
+        f.truncate(start)
 
 
 def read_items(path: Path) -> list[Item]:
@@ -463,6 +471,8 @@ def run(
     failed: dict[str, int] = {}
     for mode in modes:
         out = run_dir / f"{mode}.jsonl"
+        if out.exists():
+            repair_last_line(out)
         done = {r["id"] for r in read_jsonl(out) if not r["failure"]} if out.exists() else set()
         todo = [i for i in items if i.id not in done]
 
@@ -522,6 +532,18 @@ class Cell:
     def interval(self) -> tuple[float, float]:
         """95% Wilson interval."""
         return wilson(self.k, self.n)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Counts, rate and interval for JSON; rate and interval are null when nothing was answered."""
+        answered = self.n > 0
+        return {
+            "k": self.k,
+            "n": self.n,
+            "failed": self.failed,
+            "kind_match": self.kind_match,
+            "rate": self.rate if answered else None,
+            "interval": list(self.interval) if answered else None,
+        }
 
 
 def score_run(
@@ -594,15 +616,22 @@ def warn_if_not_ignored(path: Path) -> None:
         sys.stderr.write(f"warning: {here.as_posix()} is not ignored by git; benchmark data is private\n")
 
 
+def score_columns(
+    items: list[Item], runs: dict[str, Path], items_sha: str | None = None
+) -> dict[tuple[str, str], dict[tuple[str, str], Cell]]:
+    """Cells of every run and mode that has answers, keyed by ``(run, mode)``, in table column order."""
+    return {
+        (name, mode): score_run(items, path, mode, items_sha=items_sha)
+        for name, path in runs.items()
+        for mode in MODES
+        if (path / f"{mode}.jsonl").exists()
+    }
+
+
 def table(items: list[Item], runs: dict[str, Path], locale: str = "all", items_sha: str | None = None) -> str:
     """Markdown table: rows are planted kinds, then flags on unperturbed strings; columns are run and mode."""
-    columns: list[tuple[str, str]] = []
-    cells: dict[tuple[str, str], dict[tuple[str, str], Cell]] = {}
-    for name, path in runs.items():
-        for mode in MODES:
-            if (path / f"{mode}.jsonl").exists():
-                columns.append((name, mode))
-                cells[name, mode] = score_run(items, path, mode, items_sha=items_sha)
+    cells = score_columns(items, runs, items_sha)
+    columns = list(cells)
     head = "| Planted kind | " + " | ".join(f"{n} {m}" for n, m in columns) + " |"
     rows = [head, "|---|" + "---|" * len(columns)]
     for kind in (*KINDS, CONTROL):

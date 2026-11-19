@@ -3,9 +3,13 @@ import http.client
 import http.server
 import io
 import json
+import os
+import signal
+import sys
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -22,6 +26,9 @@ from veriglot.model import (
     review_entry,
 )
 from veriglot.review import Kind
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EN = str(FIXTURES / "credit-matrix/en/messages.po")
@@ -340,3 +347,212 @@ def test_cli_two_targets_of_one_locale_are_refused(
     argv = ["review-model", EN, NL, str(copy), "--base-url", BASE, "--model", "m", "--log", str(tmp_path / "l")]
     assert main(argv) == 3
     assert "two targets for nl" in capsys.readouterr().err
+
+
+def _model_argv(tmp_path: Path, *extra: str) -> list[str]:
+    log = str(tmp_path / "calls.log.jsonl")
+    return ["review-model", EN, NL, "--base-url", BASE, "--model", "m", "--log", log, "--concurrency", "1", *extra]
+
+
+def _completions(fake: Fake) -> int:
+    return sum(r["url"].endswith("/chat/completions") for r in fake.requests)
+
+
+def test_cli_jsonl_prints_each_finding_then_a_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    findings_schema: Callable[..., None],
+):
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    assert main(_model_argv(tmp_path, "--format", "jsonl", "--with-checks")) == 1
+    *lines, summary = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    for line in lines:
+        findings_schema(line, "finding")
+    findings_schema(summary, "summary")
+    assert summary["total"] == len(lines)
+    assert sum(summary["counts"].values()) == len(lines)
+    assert "nl:cancel:meaning" in {f["id"] for f in lines}
+    assert len({f["id"] for f in lines}) == len(lines)  # model findings that duplicate a check are dropped
+
+
+def test_cli_json_output_matches_the_committed_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    findings_schema: Callable[..., None],
+):
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 1
+    data = json.loads(capsys.readouterr().out)
+    findings_schema(data)
+    assert data["findings"]
+
+
+def test_cli_progress_goes_to_a_terminal_stderr_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fake = fake_http(monkeypatch, *[answer(GOOD)] * 80)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    main(_model_argv(tmp_path, "--format", "csv"))
+    out, err = capsys.readouterr()
+    n = _completions(fake)
+    assert f"reviewed {n}/{n}" in err
+    assert "reviewed" not in out
+    fake_http(monkeypatch, *[answer(GOOD)] * 80)
+    main(_model_argv(tmp_path, "--format", "json"))
+    assert "reviewed" not in capsys.readouterr().err  # never with JSON output
+
+
+def test_cli_rerun_with_the_same_log_asks_only_for_what_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    first = fake_http(monkeypatch, *[answer(GOOD)] * 3, *[answer("nope")] * 80)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 3
+    entries = 3 + (_completions(first) - 3) // 2  # each failed entry was asked twice
+    capsys.readouterr()
+    second = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 1
+    assert _completions(second) == entries - 3
+    out, err = capsys.readouterr()
+    assert "reused 3 answers" in err
+    assert json.loads(out)["errors"] == []
+    third = fake_http(monkeypatch)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 1
+    assert _completions(third) == 0
+    assert f"reused {entries} answers" in capsys.readouterr().err
+
+
+def test_cli_resume_asks_again_for_a_changed_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    target = tmp_path / "messages.po"
+    target.write_text(Path(NL).read_text(encoding="utf-8"), encoding="utf-8")
+    argv = _model_argv(tmp_path, "--format", "json")
+    argv[2] = str(target)
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    target.write_text(target.read_text(encoding="utf-8").replace('"Annuleren"', '"Afbreken"'), encoding="utf-8")
+    again = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    assert _completions(again) == 1
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"outcome": "ok", "request_sha',  # cut inside the JSON
+        '{"outcome": "ok", "request_sha256": "cut", "content": "\u00e9'.encode()[:-1],  # cut inside a character
+        b"[1, 2]",  # JSON, but not an object
+    ],
+)
+def test_resume_skips_a_cut_off_log_line_and_appends_on_a_new_line(tmp_path: Path, tail: bytes):
+    log = tmp_path / "log.jsonl"
+    kept = {"outcome": "ok", "request_sha256": "abc", "content": json.dumps(GOOD)}
+    failed = {"outcome": "failed", "request_sha256": "def", "content": json.dumps(GOOD)}
+    log.write_bytes(
+        b'{"canary": "x"}\n' + json.dumps(kept).encode() + b"\n" + json.dumps(failed).encode() + b"\n" + tail
+    )
+    c = client(Fake(answer(GOOD)), tmp_path)
+    c.log_path = log
+    c.load_answers()
+    assert c.answers == {"abc": kept["content"]}  # a failed call is never reused, even with valid content
+    review(c)
+    last = log.read_bytes().splitlines()[-1]
+    assert json.loads(last)["outcome"] == "ok"  # the new record is not glued onto the cut line
+
+
+def _fake_models(monkeypatch: pytest.MonkeyPatch, *replies: dict) -> Fake:
+    fake = Fake({"data": [{"id": "m"}, {"id": "m2"}]}, {"version": "9"}, *replies)
+    monkeypatch.setattr(model_mod, "_http", lambda url, body, _timeout: fake(url, body))
+    return fake
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ["--model", "m2"],
+        ["--glossary", "GLOSSARY"],
+        ["--base-url", "http://localhost:8000/v1"],
+    ],
+    ids=["model", "glossary", "base-url"],
+)
+def test_cli_rerun_with_other_settings_asks_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], change: list[str]
+):
+    glossary = tmp_path / "g.toml"
+    glossary.write_text('[style]\nnl = "Address the user formally."\n', encoding="utf-8")
+    first = _fake_models(monkeypatch, *[answer(GOOD)] * 40)
+    main(_model_argv(tmp_path, "--format", "json"))
+    entries = _completions(first)
+    same = _fake_models(monkeypatch)
+    main(_model_argv(tmp_path, "--format", "json"))
+    assert _completions(same) == 0  # the control: an unchanged rerun reuses every answer
+    changed = _fake_models(monkeypatch, *[answer(GOOD)] * 40)
+    main(_model_argv(tmp_path, "--format", "json", *[str(glossary) if c == "GLOSSARY" else c for c in change]))
+    assert _completions(changed) == entries
+    capsys.readouterr()
+
+
+def test_cli_does_not_reuse_answers_without_an_explicit_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.chdir(tmp_path)
+    argv = ["review-model", EN, NL, "--base-url", BASE, "--model", "m", "--format", "json"]
+    first = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    assert (tmp_path / "veriglot-model.log.jsonl").exists()
+    again = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    assert _completions(again) == _completions(first)
+    assert "reused" not in capsys.readouterr().err
+
+
+def test_cli_jsonl_with_concurrency_prints_whole_lines_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    argv = _model_argv(tmp_path, "--format", "jsonl", "--with-checks")
+    argv[argv.index("--concurrency") + 1] = "4"
+    main(argv)
+    *lines, summary = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    ids = [f["id"] for f in lines]
+    assert len(ids) == len(set(ids)) == summary["total"]
+
+
+def test_ctrl_c_keeps_the_answers_so_far(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def two_then_ctrl_c(func, items, _concurrency):  # noqa: ANN001, ANN202
+        yield func(items[0])
+        yield func(items[1])
+        raise KeyboardInterrupt
+
+    killed = []
+    monkeypatch.setattr(model_mod, "iter_concurrently", two_then_ctrl_c)
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    fake_http(monkeypatch, *[answer(GOOD)] * 2)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 130
+    assert killed == [(os.getpid(), signal.SIGINT)]
+    data = json.loads(capsys.readouterr().out)  # one object, holding the two answers
+    assert len(data["findings"]) == 2
+    assert data["errors"][-1]["message"] == "interrupted"
+
+
+def test_stopping_early_cancels_the_queued_calls():
+    started = []
+
+    def slow(item: int) -> int:
+        started.append(item)
+        time.sleep(0.1)
+        return item
+
+    results = model_mod.iter_concurrently(slow, list(range(20)), 2)
+    next(results)
+    begun = time.monotonic()
+    results.close()  # what Ctrl-C or an error in the consumer does
+    assert time.monotonic() - begun < 0.5  # running calls are not waited for, queued ones never start
+    time.sleep(0.3)
+    assert len(started) < 8

@@ -54,6 +54,26 @@ MODEL_ONLY_KINDS = frozenset(
 )
 
 
+# What `veriglot kinds` prints: the severity each kind gets, and what it finds.
+KIND_HELP: dict[Kind, tuple[str, str]] = {
+    Kind.MISSING: ("error", "a source key with no entry, or an empty or whitespace-only translation"),
+    Kind.EXTRA: ("warning", "a key that is not in the source catalog"),
+    Kind.UNTRANSLATED: ("info", "a translation identical to source text that has letters"),
+    Kind.PLACEHOLDER: ("error or warning", "arguments such as {name} missing or added, also per plural branch"),
+    Kind.PLURAL: ("error or warning", "plural or select branches that do not match the source or the CLDR categories"),
+    Kind.SYNTAX: ("error", "malformed ICU MessageFormat in the source or target"),
+    Kind.WHITESPACE: ("warning", "leading or trailing whitespace, or a newline count, that differs from the source"),
+    Kind.TAG: ("error", "rich-text tags such as <contrib> or <0> missing or added"),
+    Kind.FUZZY: ("info", "an entry marked #, fuzzy"),
+    Kind.MEANING: ("per finding", "the translation says something different from the source"),
+    Kind.OMISSION: ("per finding", "part of the source meaning is missing from the translation"),
+    Kind.ADDITION: ("per finding", "the translation adds meaning the source does not have"),
+    Kind.TERMINOLOGY: ("per finding", "a glossary term is not used, or another word for the same concept"),
+    Kind.REGISTER: ("per finding", "formal or informal address differs from the style rule"),
+    Kind.GRAMMAR: ("per finding", "spelling, grammar or agreement errors in the translation"),
+}
+
+
 class Severity(StrEnum):
     """How bad a finding is: only errors fail a check."""
 

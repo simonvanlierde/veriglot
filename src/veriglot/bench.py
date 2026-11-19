@@ -141,6 +141,32 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in lines[1:] if line.strip()]
 
 
+def repair_last_line(path: Path) -> None:
+    """Drop a last line that a stopped run cut off, or that is not a JSON object; end the file with a newline.
+
+    Only for an answers file about to be appended to: items and scores files stay strict.
+    """
+    data = path.read_bytes()
+    body = data.rstrip(b"\n")
+    start = body.rfind(b"\n") + 1
+    try:
+        whole = isinstance(json.loads(body[start:].decode("utf-8")), dict)
+    except UnicodeDecodeError, json.JSONDecodeError:
+        whole = False
+    if whole and data.endswith(b"\n"):
+        return
+    if not whole:
+        sys.stderr.write(f"warning: dropped a cut-off last line from {path.as_posix()}; that item is asked again\n")
+    if not whole and start == 0:
+        path.unlink()  # only the canary line was there, and it was cut
+        return
+    with path.open("r+b") as f:
+        f.truncate(len(body) if whole else start)
+        if whole:
+            f.seek(0, 2)
+            f.write(b"\n")
+
+
 def read_items(path: Path) -> list[Item]:
     """Read an items file written by ``make``."""
     return [Item(**r) for r in read_jsonl(path)]
@@ -463,6 +489,8 @@ def run(
     failed: dict[str, int] = {}
     for mode in modes:
         out = run_dir / f"{mode}.jsonl"
+        if out.exists():
+            repair_last_line(out)
         done = {r["id"] for r in read_jsonl(out) if not r["failure"]} if out.exists() else set()
         todo = [i for i in items if i.id not in done]
 

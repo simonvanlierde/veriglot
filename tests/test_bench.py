@@ -484,3 +484,53 @@ def test_qe_table_and_cli_read_scores_and_check_the_items_hash(tmp_path: Path, c
     out = capsys.readouterr().out
     assert "score > 7.00 (target 20%)" in out
     assert "2/4 = 50%" in out
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"id": "nl:k',  # cut inside the JSON
+        '{"id": "é'.encode()[:-1],  # cut inside a character
+        b"[1, 2]\n",  # JSON, but not an object
+        None,  # the last answer lost, and the one before it lost its newline
+    ],
+    ids=["cut-json", "cut-character", "not-an-object", "no-newline"],
+)
+def test_resume_repairs_a_cut_last_answer(tmp_path: Path, catalogs: Cats, tail: bytes | None):
+    items = _make(tmp_path, catalogs)
+    calls = []
+
+    def good(_url: str, _body: dict | None) -> dict:
+        calls.append(1)
+        return judge_reply(correct=True)
+
+    args = (items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo())
+    bench.run(*args, modes=("judge",), concurrency=1)
+    answers = tmp_path / "run/judge.jsonl"
+    head = b"".join(answers.read_bytes().splitlines(keepends=True)[:-1])
+    answers.write_bytes(head.rstrip(b"\n") if tail is None else head + tail)
+    calls.clear()
+    second = bench.run(*args, modes=("judge",), concurrency=1)
+    assert len(calls) == 1  # only the item whose answer was lost
+    assert second["failed"] == {"judge": 0}
+    answered = bench.read_jsonl(answers)  # strict again: every line is whole
+    assert len({r["id"] for r in answered}) == len(answered) == second["n_items"]
+
+
+def test_items_file_with_a_cut_last_line_stays_an_error(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+    items.write_bytes(items.read_bytes() + b'{"id": "nl:k')
+    with pytest.raises(json.JSONDecodeError):
+        bench.read_items(items)
+
+
+def test_resume_after_a_cut_canary_starts_the_file_again(tmp_path: Path, catalogs: Cats):
+    items = _make(tmp_path, catalogs)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run/judge.jsonl").write_bytes(b'{"cana')
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    result = bench.run(items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    assert len(bench.read_jsonl(tmp_path / "run/judge.jsonl")) == result["n_items"]

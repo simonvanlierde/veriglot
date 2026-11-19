@@ -23,7 +23,7 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 - The JSON printed when a command fails keeps the success shape (`findings: []` for `check` and `review-model`), and Ctrl-C with `--format json` or `jsonl` prints the object too.
 - `veriglot apply` rejects a later row of a model kind on an entry an earlier row changed as stale, instead of skipping it as resolved.
 - Model calls retry with a doubled `max_tokens` after a length stop, treat `http.client` errors as recorded failures, ignore proxy variables and redirects for loopback servers, and JSON-encode catalog text in the prompts; `--extra-body` must be a JSON object.
-- `bench run` keeps answers as they arrive, retries failed items on rerun, refuses to mix runs and exits 3 on failures; `bench score` checks the items hash.
+- `bench run` keeps answers as they arrive, retries failed items on rerun (and an item whose answer line a stopped run cut off), refuses to mix runs and exits 3 on failures; `bench score` checks the items hash.
 - `veriglot apply` no longer writes into the previous entry when an earlier `msgstr` holds U+2028, U+2029, form feed or another character Python treats as a line break; it now checks the msgid of every block it replaces.
 - Catalogs with a UTF-8 byte order mark are read correctly (the header no longer swallows the first entry), and malformed `.po` lines such as unterminated strings exit with code 3 and the line number instead of being read silently.
 - Non-integer `=N` keys (`=abc`, `=inf`, `=1.5`), plural or select arguments without branches or without `other`, and unknown argument types are syntax findings instead of crashes or passes.

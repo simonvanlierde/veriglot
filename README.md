@@ -153,7 +153,7 @@ veriglot bench score data/bench/items.jsonl data/bench/runs/m1
 
 `bench make` prints a JSON object with `schema_version`, the items `path`, the counts per language and
 kind, and `errors`. `bench run` appends each answer as it arrives, asks again for failed ones when rerun
-into the same `--out` (and refuses a different model, prompt or items there), prints the manifest with
+into the same `--out` (and for one whose line a stopped run cut off) (and refuses a different model, prompt or items there), prints the manifest with
 `schema_version`, `run_dir`, `failed` and `errors`, and exits 3 if any answer failed. An unknown `--modes`
 value is a usage error (exit 2). `bench score --format json` prints the cells of each run and mode
 (`k`, `n`, `failed`, `kind_match`, `rate`, `interval`) instead of the Markdown table. A MetricX-24

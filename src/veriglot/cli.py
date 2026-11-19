@@ -261,12 +261,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return commands[args.command](args)
     except KeyboardInterrupt:
-        _print_failure(args, "interrupted", "rerun into the same --out to resume" if args.command == "bench" else None)
+        _print_failure(args, "interrupted", RESUME_HELP.get(args.command))
         print("interrupted", file=sys.stderr)
-        sys.stdout.flush()
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGINT)
-        return 130
+        return _die_of_sigint()
     except (OSError, ValueError, RuntimeError) as exc:
         _print_failure(args, str(exc), None)
         print(f"error: {exc}", file=sys.stderr)
@@ -278,17 +275,29 @@ def _envelope(errors: Sequence[dict[str, str | None]] = (), **fields: object) ->
     return {"schema_version": SCHEMA_VERSION, **fields, "errors": list(errors)}
 
 
+# The result key of each command's JSON, kept in the envelope of a run that stopped.
+RESULT_KEY = {"check": "findings", "review-model": "findings", "apply": "outcomes"}
+RESUME_HELP = {
+    "review-model": f"rerun with the same --log (default {DEFAULT_LOG}) to reuse the answers so far",
+    "bench": "rerun into the same --out to resume",
+}
+
+
 def _print_failure(args: argparse.Namespace, message: str, help_text: str | None) -> None:
-    """Print the envelope of a run that stopped, with the fields the command's success output has."""
+    """Print the envelope of a run that stopped before it had results, with the command's empty result key."""
     fmt = getattr(args, "format", None)
-    if fmt not in ("json", "jsonl") or getattr(args, "reported", False):
+    if fmt not in ("json", "jsonl"):
         return
-    fields: dict[str, object] = {}
-    if fmt == "json" and args.command in ("check", "review-model"):
-        fields["findings"] = []
-    elif args.command == "apply":
-        fields["outcomes"] = []
+    fields = {RESULT_KEY[args.command]: []} if fmt == "json" and args.command in RESULT_KEY else {}
     print(json.dumps(_envelope([{"message": message, "help": help_text}], **fields), ensure_ascii=False))
+
+
+def _die_of_sigint() -> int:
+    """Die of SIGINT, as the shell expects of an interrupted command (exit 130 where that cannot happen)."""
+    sys.stdout.flush()
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGINT)
+    return 130
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -341,33 +350,24 @@ def _review_model(args: argparse.Namespace) -> int:
     ]
     if args.format == "jsonl":
         _print_lines(f for found in det.values() for f in found)
-    results: dict[_Entry, model_mod.EntryReview] = {}
-    try:
-        _ask_all(
-            lambda e: model_mod.review_entry(client, prompt, glossary, *e),
-            entries,
-            args.concurrency,
-            results,
-            stream=args.format == "jsonl",
-            seen=seen,
-            progress=sys.stderr.isatty() and args.format not in ("json", "jsonl"),
-        )
-    except (KeyboardInterrupt, OSError, ValueError, RuntimeError) as exc:
-        if args.format in ("json", "jsonl"):
-            # The answers so far go out with the error; main() then prints only its stderr line.
-            findings, errors = _collect(targets, det, entries, results, seen)
-            message = "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)
-            log = _show((args.log or DEFAULT_LOG).as_posix())
-            errors.append({"message": message, "help": f"rerun with --log {log} to reuse the answers so far"})
-            _emit(findings, args.format, errors)
-            args.reported = True
-        raise
+    results, stopped = _ask_all(
+        lambda e: model_mod.review_entry(client, prompt, glossary, *e),
+        entries,
+        args.concurrency,
+        stream=args.format == "jsonl",
+        seen=seen,
+        progress=sys.stderr.isatty() and args.format not in ("json", "jsonl"),
+    )
     findings, errors = _collect(targets, det, entries, results, seen)
+    if stopped is not None:  # the answers so far still go out, with the stop as the last error
+        message = "interrupted" if isinstance(stopped, KeyboardInterrupt) else str(stopped)
+        errors.append({"message": message, "help": RESUME_HELP["review-model"]})
     if client.reused:
         print(f"reused {client.reused} answers from {_show(args.log.as_posix())}", file=sys.stderr)
     for e in errors:
         print(f"error: {e['message']}", file=sys.stderr)
-    return _emit(findings, args.format, errors)
+    code = _emit(findings, args.format, errors)
+    return _die_of_sigint() if isinstance(stopped, KeyboardInterrupt) else code
 
 
 def _collect(
@@ -412,25 +412,30 @@ def _ask_all(
     review: Callable[[_Entry], model_mod.EntryReview],
     entries: list[_Entry],
     concurrency: int,
-    results: dict[_Entry, model_mod.EntryReview],
     *,
     stream: bool,
     seen: set[str],
     progress: bool,
-) -> None:
-    """Review every entry into ``results``, which keeps the answers so far when the run stops.
+) -> tuple[dict[_Entry, model_mod.EntryReview], BaseException | None]:
+    """Review every entry; return the answers, and what stopped the run early (Ctrl-C, an error), if anything.
 
     ``stream`` prints each finding as it arrives, in completion order; ``progress`` shows ``N/M`` on stderr.
     """
-    pairs = model_mod.iter_concurrently(lambda e: (e, review(e)), entries, concurrency)
-    for done, (entry, r) in enumerate(pairs, 1):
-        results[entry] = r
-        if stream:
-            _print_lines(f for f in r.findings if f.id not in seen)
-        if progress:
-            print(f"\rreviewed {done}/{len(entries)}", end="", file=sys.stderr, flush=True)
+    results: dict[_Entry, model_mod.EntryReview] = {}
+    stopped = None
+    try:
+        pairs = model_mod.iter_concurrently(lambda e: (e, review(e)), entries, concurrency)
+        for done, (entry, r) in enumerate(pairs, 1):
+            results[entry] = r
+            if stream:
+                _print_lines(f for f in r.findings if f.id not in seen)
+            if progress:
+                print(f"\rreviewed {done}/{len(entries)}", end="", file=sys.stderr, flush=True)
+    except (KeyboardInterrupt, OSError, ValueError, RuntimeError) as exc:
+        stopped = exc
     if progress:
         print(file=sys.stderr)
+    return results, stopped
 
 
 def _print_lines(findings: Iterable[Finding]) -> None:

@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from veriglot.canary import CANARY
+from veriglot.canary import CANARY, append_jsonl, json_object
 from veriglot.catalog import Catalog, is_read_only
 from veriglot.model import (
     Glossary,
@@ -118,16 +118,6 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def append_jsonl(path: Path, record: dict[str, Any]) -> None:
-    """Append one record; a new file starts with the canary."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    new = not path.exists()
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        if new:
-            f.write(json.dumps({"canary": CANARY}) + "\n")
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     """Read JSON Lines, skipping the canary line.
 
@@ -142,29 +132,21 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def repair_last_line(path: Path) -> None:
-    """Drop a last line that a stopped run cut off, or that is not a JSON object; end the file with a newline.
+    """Drop a last line that a stopped run cut off, or that is not a JSON object.
 
     Only for an answers file about to be appended to: items and scores files stay strict.
     """
     data = path.read_bytes()
     body = data.rstrip(b"\n")
     start = body.rfind(b"\n") + 1
-    try:
-        whole = isinstance(json.loads(body[start:].decode("utf-8")), dict)
-    except UnicodeDecodeError, json.JSONDecodeError:
-        whole = False
-    if whole and data.endswith(b"\n"):
+    if json_object(body[start:]) is not None:
         return
-    if not whole:
-        sys.stderr.write(f"warning: dropped a cut-off last line from {path.as_posix()}; that item is asked again\n")
-    if not whole and start == 0:
+    sys.stderr.write(f"warning: dropped a cut-off last line from {path.as_posix()}; that item is asked again\n")
+    if start == 0:
         path.unlink()  # only the canary line was there, and it was cut
         return
     with path.open("r+b") as f:
-        f.truncate(len(body) if whole else start)
-        if whole:
-            f.seek(0, 2)
-            f.write(b"\n")
+        f.truncate(start)
 
 
 def read_items(path: Path) -> list[Item]:

@@ -114,8 +114,8 @@ veriglot review-model src/locales/en/messages.po src/locales/nl/messages.po \
 - `--format jsonl` prints each finding as one line as soon as its entry is answered, in completion
   order, then a summary line with `schema_version`, `total`, `counts` per severity and `errors`. When
   stderr is a terminal and the format is not `json` or `jsonl`, `reviewed N/M` shows progress there.
-  On Ctrl-C (exit 130) or a run that cannot go on (exit 3), `--format json` still prints the findings
-  answered so far.
+  On Ctrl-C (exit 130) or a run that cannot go on (exit 3), every format still prints the findings
+  answered so far, with the stop as the last error.
 - `--with-checks` merges the deterministic findings. Placeholder, plural, tag and syntax problems
   stay with those checks; the prompt tells the model not to report them.
 - `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'` adds request fields, for

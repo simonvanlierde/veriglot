@@ -10,7 +10,6 @@ Every call is logged with the model, server version, prompt hash, settings and t
 import hashlib
 import http.client
 import json
-import os
 import re
 import threading
 import time
@@ -19,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
 from string import Template
@@ -28,18 +27,17 @@ from typing import TYPE_CHECKING, Any, Literal
 from babel import Locale
 from pydantic import BaseModel, ValidationError
 
-from veriglot.canary import CANARY
+from veriglot.canary import append_jsonl, json_object
 from veriglot.review import Finding, Kind, Severity, check_entry, fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Generator, Sequence
     from pathlib import Path
 
 MODEL_KINDS = (Kind.MEANING, Kind.OMISSION, Kind.ADDITION, Kind.TERMINOLOGY, Kind.REGISTER, Kind.GRAMMAR)
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 _SEVERITY_ORDER = [Severity.INFO, Severity.WARNING, Severity.ERROR]
 CONSTRAINTS = ("structured_outputs", "response_format", "none")
-NEWLINE = b"\n"
 
 type Transport = Callable[[str, dict[str, Any] | None], dict[str, Any]]
 """``transport(url, body)``: POST ``body`` as JSON, or GET when ``body`` is None; returns the parsed JSON."""
@@ -207,25 +205,15 @@ class ModelClient:
         if self.log_path is None or not self.log_path.exists():
             return
         for line in self.log_path.read_bytes().splitlines():
-            try:
-                entry = json.loads(line.decode("utf-8"))
-            except UnicodeDecodeError, json.JSONDecodeError:
-                continue
-            if not isinstance(entry, dict) or entry.get("outcome") != "ok" or not entry.get("request_sha256"):
-                continue
-            if isinstance(content := entry.get("content"), str) and content:
-                self.answers[entry["request_sha256"]] = content
+            entry = json_object(line) or {}
+            if entry.get("outcome") == "ok" and entry.get("request_sha256") and isinstance(entry.get("content"), str):
+                self.answers[entry["request_sha256"]] = entry["content"]
 
     def _request_sha256(self, text: str, schema: type[BaseModel]) -> str:
-        request = {
-            "base_url": self.base_url,
-            "server_version": self.server_version,
-            "model": self.model,
-            "schema": schema.__name__,
-            "settings": asdict(self.settings),
-            "prompt": text,
-        }
-        return hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+        body = self._body(text, schema, 0, self.settings.max_tokens)
+        return hashlib.sha256(
+            json.dumps([self.base_url, self.server_version, body], sort_keys=True).encode()
+        ).hexdigest()
 
     def _body(self, prompt_text: str, schema: type[BaseModel], attempt: int, max_tokens: int) -> dict[str, Any]:
         s = self.settings
@@ -335,15 +323,8 @@ class ModelClient:
             "error": error,
             **record,
         }
-        # Appends always go to the end, wherever f.seek points.
-        with self._lock, self.log_path.open("a+b") as f:
-            if f.seek(0, os.SEEK_END) == 0:
-                f.write((json.dumps({"canary": CANARY}) + "\n").encode())
-            else:
-                f.seek(-1, os.SEEK_END)
-                if f.read(1) != NEWLINE:
-                    f.write(NEWLINE)  # a stopped run can leave its last line without one
-            f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode())
+        with self._lock:
+            append_jsonl(self.log_path, entry)
 
 
 @dataclass(frozen=True)
@@ -504,7 +485,7 @@ def judge_entry(
     return result.parsed.correct, result.parsed.rationale, None
 
 
-def iter_concurrently[T, R](func: Callable[[T], R], items: Sequence[T], concurrency: int) -> Iterator[R]:
+def iter_concurrently[T, R](func: Callable[[T], R], items: Sequence[T], concurrency: int) -> Generator[R]:
     """Yield ``func(item)`` as each call finishes (input order when ``concurrency`` is 1).
 
     When the caller stops early (Ctrl-C, an error), queued calls are cancelled and running

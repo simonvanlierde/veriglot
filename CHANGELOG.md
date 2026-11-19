@@ -6,7 +6,7 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 
 ### Added
 
-- `veriglot review-model --format jsonl` prints each finding as its entry is answered, in completion order, and a summary line last; a terminal shows `reviewed N/M` progress on stderr, except with `--format json` or `jsonl`; a rerun given `--log` explicitly reuses the answers in that log (matched by a new `request_sha256` log field) and asks only for the rest; Ctrl-C or a failed run under `--format json` keeps the findings answered so far.
+- `veriglot review-model --format jsonl` prints each finding as its entry is answered, in completion order, and a summary line last; a terminal shows `reviewed N/M` progress on stderr, except with `--format json` or `jsonl`; a rerun given `--log` explicitly reuses the answers in that log (matched by a new `request_sha256` log field) and asks only for the rest; Ctrl-C or a run that stops on an error still prints the findings answered so far.
 - `veriglot kinds` lists the finding kinds, their severity and the command that reports them; `bench score --format json` prints the score cells.
 - `src/veriglot/findings.schema.json` describes the `check` and `review-model` JSON and JSON Lines output.
 - `veriglot review-model` reviews translations with a model on any chat-completions server and reports `meaning`, `omission`, `addition`, `terminology`, `register`, `grammar` and `untranslated` findings in the same type, CSV and `apply` step as `check`; calls are constrained, validated, retried once and logged with the prompt hash.

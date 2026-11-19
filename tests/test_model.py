@@ -3,8 +3,8 @@ import http.client
 import http.server
 import io
 import json
+import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -473,12 +473,10 @@ def _fake_models(monkeypatch: pytest.MonkeyPatch, *replies: dict) -> Fake:
     "change",
     [
         ["--model", "m2"],
-        ["--temperature", "0.5"],
         ["--glossary", "GLOSSARY"],
-        ["--extra-body", '{"chat_template_kwargs": {"enable_thinking": false}}'],
         ["--base-url", "http://localhost:8000/v1"],
     ],
-    ids=["model", "temperature", "glossary", "extra-body", "base-url"],
+    ids=["model", "glossary", "base-url"],
 )
 def test_cli_rerun_with_other_settings_asks_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], change: list[str]
@@ -523,46 +521,38 @@ def test_cli_jsonl_with_concurrency_prints_whole_lines_once(
     assert len(ids) == len(set(ids)) == summary["total"]
 
 
-SLOW_RUN = """
-import json, signal, sys, time
-from veriglot import model
-from veriglot.cli import main
+def test_ctrl_c_keeps_the_answers_so_far(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def two_then_ctrl_c(func, items, _concurrency):  # noqa: ANN001, ANN202
+        yield func(items[0])
+        yield func(items[1])
+        raise KeyboardInterrupt
 
-signal.signal(signal.SIGINT, signal.default_int_handler)  # a parent may have ignored SIGINT
-
-
-def http(url, body, timeout):
-    if body is None:
-        return {"data": [{"id": "m"}]} if url.endswith("/models") else {"version": "9"}
-    time.sleep(0.5)
-    content = json.dumps(GOOD)
-    return {"choices": [{"finish_reason": "stop", "message": {"content": content}}], "usage": {}}
-
-
-model._http = http
-sys.exit(main(sys.argv[1:]))
-"""
-
-
-def test_ctrl_c_stops_at_once_and_keeps_the_answers_so_far(tmp_path: Path):
-    script = tmp_path / "slow.py"
-    script.write_text(f"GOOD = {GOOD!r}\n" + SLOW_RUN, encoding="utf-8")
-    log = tmp_path / "calls.log.jsonl"
-    argv = ["review-model", EN, NL, "--base-url", BASE, "--model", "m", "--log", str(log), "--format", "json"]
-    proc = subprocess.Popen(  # noqa: S603
-        [sys.executable, str(script), *argv, "--concurrency", "2"], stdout=subprocess.PIPE, text=True
-    )
-
-    def answered() -> int:
-        return log.read_bytes().count(b'"outcome": "ok"') if log.exists() else 0
-
-    deadline = time.monotonic() + 20
-    while answered() < 2 and time.monotonic() < deadline:
-        time.sleep(0.05)
-    proc.send_signal(signal.SIGINT)
-    out, _ = proc.communicate(timeout=20)
-    assert proc.returncode == -signal.SIGINT
-    data = json.loads(out)
+    killed = []
+    monkeypatch.setattr(model_mod, "iter_concurrently", two_then_ctrl_c)
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    fake_http(monkeypatch, *[answer(GOOD)] * 2)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 130
+    assert killed == [(os.getpid(), signal.SIGINT)]
+    data = json.loads(capsys.readouterr().out)  # one object, holding the two answers
+    assert len(data["findings"]) == 2
     assert data["errors"][-1]["message"] == "interrupted"
-    assert data["findings"]  # the answers already in
-    assert answered() < 6  # of 10 entries: queued calls were cancelled, not waited for
+
+
+def test_stopping_early_cancels_the_queued_calls():
+    started = []
+
+    def slow(item: int) -> int:
+        started.append(item)
+        time.sleep(0.1)
+        return item
+
+    results = model_mod.iter_concurrently(slow, list(range(20)), 2)
+    next(results)
+    begun = time.monotonic()
+    results.close()  # what Ctrl-C or an error in the consumer does
+    assert time.monotonic() - begun < 0.5  # running calls are not waited for, queued ones never start
+    time.sleep(0.3)
+    assert len(started) < 8

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/simonvanlierde/veriglot/blob/main/src/veriglot/findings.schema.json",
+  "title": "veriglot findings",
+  "description": "Output of `veriglot check --format json` and `veriglot review-model --format json`. With `--format jsonl`, review-model prints one `#/$defs/finding` per line and a `#/$defs/summary` last. Fields may be added without a new schema_version.",
+  "type": "object",
+  "required": ["schema_version", "findings", "errors"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "errors": { "$ref": "#/$defs/errors" }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": [
+        "id",
+        "locale",
+        "key",
+        "kind",
+        "severity",
+        "source",
+        "target",
+        "context",
+        "message",
+        "proposed",
+        "fingerprint"
+      ],
+      "properties": {
+        "id": { "type": "string", "description": "<locale>:<key>:<kind>, stable across runs" },
+        "locale": { "type": "string" },
+        "key": { "type": "string" },
+        "kind": {
+          "enum": [
+            "missing",
+            "extra",
+            "untranslated",
+            "placeholder",
+            "plural",
+            "syntax",
+            "whitespace",
+            "tag",
+            "fuzzy",
+            "meaning",
+            "omission",
+            "addition",
+            "terminology",
+            "register",
+            "grammar"
+          ]
+        },
+        "severity": { "enum": ["error", "warning", "info"] },
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "context": { "type": "string" },
+        "message": { "type": "string" },
+        "proposed": { "type": ["string", "null"] },
+        "fingerprint": { "type": "string", "description": "hash of source and target; apply refuses a stale one" }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["message", "help"],
+        "properties": {
+          "message": { "type": "string" },
+          "help": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["schema_version", "errors"],
+      "not": { "required": ["findings"] },
+      "properties": {
+        "schema_version": { "const": 1 },
+        "total": { "type": "integer", "minimum": 0 },
+        "counts": {
+          "type": "object",
+          "required": ["error", "warning", "info"],
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "errors": { "$ref": "#/$defs/errors" }
+      }
+    }
+  }
+}

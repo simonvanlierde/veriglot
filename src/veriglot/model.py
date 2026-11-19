@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
 from string import Template
@@ -173,6 +173,9 @@ class ModelClient:
         self._transport = transport or (lambda url, body: _http(url, body, timeout))
         self._lock = threading.Lock()
         self.server_version: str | None = None
+        self.answers: dict[str, str] = {}
+        """Answers of earlier calls by ``request_sha256``, which ``complete`` reuses instead of asking."""
+        self.reused = 0
 
     def preflight(self) -> None:
         """Check that the server answers and the model is served; record the server version.
@@ -191,6 +194,27 @@ class ModelClient:
             self.server_version = str(self._transport(f"{root}/version", None).get("version"))
         except OSError, ValueError:
             self.server_version = None  # not every server has /version
+
+    def load_answers(self) -> None:
+        """Reuse the successful answers already in the call log, so a stopped run resumes.
+
+        Only a call with the same model, settings, schema and rendered prompt is reused, so a
+        changed catalog entry, glossary or prompt is asked again. Lines that are not JSON, such as
+        a line cut off when the run stopped, are skipped.
+        """
+        if self.log_path is None or not self.log_path.exists():
+            return
+        for line in self.log_path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("outcome") == "ok" and entry.get("request_sha256") and entry.get("content"):
+                self.answers[entry["request_sha256"]] = entry["content"]
+
+    def _request_sha256(self, text: str, schema: type[BaseModel]) -> str:
+        request = {"model": self.model, "schema": schema.__name__, "settings": asdict(self.settings), "prompt": text}
+        return hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
 
     def _body(self, prompt_text: str, schema: type[BaseModel], attempt: int, max_tokens: int) -> dict[str, Any]:
         s = self.settings
@@ -214,20 +238,31 @@ class ModelClient:
     def complete(self, prompt: Prompt, schema: type[BaseModel], tag: str, **values: str) -> CallResult:
         """Render ``prompt``, ask the model, validate the answer; retry once on any failure.
 
-        ``tag`` names the entry in the log. The result holds the validated object or the last error.
+        ``tag`` names the entry in the log. The result holds the validated object or the last error;
+        an answer from ``answers`` is reused with ``attempts`` 0.
         """
         text = prompt.render(**values)
+        request_sha256 = self._request_sha256(text, schema)
+        if (content := self.answers.get(request_sha256)) is not None:
+            try:
+                parsed = schema.model_validate_json(content)
+            except ValidationError:
+                pass  # ask again
+            else:
+                with self._lock:
+                    self.reused += 1
+                return CallResult(parsed, None, 0)
         error = "no attempt"
         max_tokens = self.settings.max_tokens
         for attempt in (0, 1):
             started = time.monotonic()
-            record: dict[str, Any] = {}
+            record: dict[str, Any] = {"request_sha256": request_sha256}
             try:
                 reply = self._transport(
                     f"{self.base_url}/chat/completions", self._body(text, schema, attempt, max_tokens)
                 )
                 choice = reply["choices"][0]
-                record = {
+                record |= {
                     "finish_reason": choice.get("finish_reason"),
                     "usage": reply.get("usage"),
                     "content": choice["message"].get("content"),

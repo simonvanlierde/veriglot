@@ -1836,6 +1836,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "jsonschema" },
     { name = "jupyterlab" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1852,6 +1853,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = ">=6" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "jupyterlab", specifier = ">=4.6.4" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },

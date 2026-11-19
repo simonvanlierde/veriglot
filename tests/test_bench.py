@@ -1,6 +1,7 @@
 import json
 import math
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,7 +17,6 @@ from veriglot.cli import main
 if TYPE_CHECKING:
     import random
     from collections.abc import Callable
-    from pathlib import Path
 
 BASE = "http://127.0.0.1:8000/v1"
 
@@ -262,8 +262,11 @@ def test_cli_bench_make_and_score(tmp_path: Path, capsys: pytest.CaptureFixture[
         main(["bench", "make", str(tmp_path / "en.po"), str(tmp_path / "nl.po"), "--out", str(out), "--controls", "2"])
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["nl"]["clean"] == 2
-    assert (out / "items.jsonl").exists()
+    made = json.loads(capsys.readouterr().out)
+    assert (made["schema_version"], made["errors"]) == (1, [])
+    assert made["items"]["nl"]["clean"] == 2
+    assert Path(made["path"]) == out / "items.jsonl"
+    assert Path(made["path"]).exists()
 
 
 def test_untranslated_needs_enough_source_words_for_the_span():
@@ -384,7 +387,7 @@ def test_runs_with_the_same_directory_name_get_distinct_columns(tmp_path: Path, 
 
 
 def test_cli_bench_run_exits_nonzero_when_an_answer_failed(
-    tmp_path: Path, catalogs: Cats, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, catalogs: Cats, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     items = _make(tmp_path, catalogs)
     replies = [{"data": [{"id": "m"}]}, {"version": "1"}]
@@ -398,6 +401,47 @@ def test_cli_bench_run_exits_nonzero_when_an_answer_failed(
     monkeypatch.setattr(model_mod, "_http", http)
     argv = ["bench", "run", str(items), "--out", str(tmp_path / "run"), "--base-url", BASE, "--model", "m"]
     assert main([*argv, "--modes", "judge"]) == 3
+    data = json.loads(capsys.readouterr().out)
+    assert data["schema_version"] == 1
+    assert data["failed"] == {"judge": data["n_items"]}
+    assert data["errors"][0]["message"] == f"{data['n_items']} answers failed the schema twice"
+    assert data["run_dir"] == (tmp_path / "run").as_posix()
+
+
+def test_cli_bench_run_unknown_mode_is_a_usage_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    argv = ["bench", "run", str(tmp_path / "i.jsonl"), "--out", str(tmp_path), "--base-url", BASE, "--model", "m"]
+    with pytest.raises(SystemExit) as exc:
+        main([*argv, "--modes", "review,jduge"])
+    assert exc.value.code == 2
+    assert "unknown mode 'jduge'" in capsys.readouterr().err
+
+
+def test_cli_bench_score_without_runs_or_qe_is_a_usage_error(tmp_path: Path):
+    with pytest.raises(SystemExit) as exc:
+        main(["bench", "score", str(tmp_path / "i.jsonl")])
+    assert exc.value.code == 2
+
+
+def test_cli_bench_score_json(tmp_path: Path, catalogs: Cats, capsys: pytest.CaptureFixture[str]):
+    items = _make(tmp_path, catalogs)
+
+    def good(_url: str, _body: dict | None) -> dict:
+        return judge_reply(correct=True)
+
+    bench.run(items, tmp_path / "run", _client(good), model_mod.Glossary(), bench.RunInfo(), modes=("judge",))
+    qe = tmp_path / "qe"
+    bench.write_jsonl(qe / "scores.jsonl", ({"id": i.id, "score": 1.0} for i in bench.read_items(items)))
+    argv = ["bench", "score", str(items), str(tmp_path / "run"), "--qe", str(qe), "--qe-rate", "0.5"]
+    assert main([*argv, "--format", "json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert (data["schema_version"], data["errors"], data["locale"]) == (1, [], "all")
+    (column,) = data["runs"]
+    assert (column["run"], column["mode"]) == ("run", "judge")
+    clean = next(c for c in column["cells"] if c["kind"] == "clean")
+    assert (clean["k"], clean["n"], clean["rate"]) == (0, 2, 0.0)
+    assert clean["interval"][0] == 0.0
+    assert data["qe"][0]["rate"] == 0.5
+    assert data["qe"][0]["cells"]
 
 
 def test_bench_run_warns_when_the_output_is_not_git_ignored(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

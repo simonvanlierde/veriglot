@@ -523,6 +523,18 @@ class Cell:
         """95% Wilson interval."""
         return wilson(self.k, self.n)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Counts, rate and interval for JSON; rate and interval are null when nothing was answered."""
+        answered = self.n > 0
+        return {
+            "k": self.k,
+            "n": self.n,
+            "failed": self.failed,
+            "kind_match": self.kind_match,
+            "rate": self.rate if answered else None,
+            "interval": list(self.interval) if answered else None,
+        }
+
 
 def score_run(
     items: list[Item],
@@ -594,15 +606,22 @@ def warn_if_not_ignored(path: Path) -> None:
         sys.stderr.write(f"warning: {here.as_posix()} is not ignored by git; benchmark data is private\n")
 
 
+def score_columns(
+    items: list[Item], runs: dict[str, Path], items_sha: str | None = None
+) -> dict[tuple[str, str], dict[tuple[str, str], Cell]]:
+    """Cells of every run and mode that has answers, keyed by ``(run, mode)``, in table column order."""
+    return {
+        (name, mode): score_run(items, path, mode, items_sha=items_sha)
+        for name, path in runs.items()
+        for mode in MODES
+        if (path / f"{mode}.jsonl").exists()
+    }
+
+
 def table(items: list[Item], runs: dict[str, Path], locale: str = "all", items_sha: str | None = None) -> str:
     """Markdown table: rows are planted kinds, then flags on unperturbed strings; columns are run and mode."""
-    columns: list[tuple[str, str]] = []
-    cells: dict[tuple[str, str], dict[tuple[str, str], Cell]] = {}
-    for name, path in runs.items():
-        for mode in MODES:
-            if (path / f"{mode}.jsonl").exists():
-                columns.append((name, mode))
-                cells[name, mode] = score_run(items, path, mode, items_sha=items_sha)
+    cells = score_columns(items, runs, items_sha)
+    columns = list(cells)
     head = "| Planted kind | " + " | ".join(f"{n} {m}" for n, m in columns) + " |"
     rows = [head, "|---|" + "---|" * len(columns)]
     for kind in (*KINDS, CONTROL):

@@ -3,9 +3,10 @@ import http.client
 import http.server
 import io
 import json
+import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -22,6 +23,9 @@ from veriglot.model import (
     review_entry,
 )
 from veriglot.review import Kind
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EN = str(FIXTURES / "credit-matrix/en/messages.po")
@@ -340,3 +344,101 @@ def test_cli_two_targets_of_one_locale_are_refused(
     argv = ["review-model", EN, NL, str(copy), "--base-url", BASE, "--model", "m", "--log", str(tmp_path / "l")]
     assert main(argv) == 3
     assert "two targets for nl" in capsys.readouterr().err
+
+
+def _model_argv(tmp_path: Path, *extra: str) -> list[str]:
+    log = str(tmp_path / "calls.log.jsonl")
+    return ["review-model", EN, NL, "--base-url", BASE, "--model", "m", "--log", log, "--concurrency", "1", *extra]
+
+
+def _completions(fake: Fake) -> int:
+    return sum(r["url"].endswith("/chat/completions") for r in fake.requests)
+
+
+def test_cli_jsonl_prints_each_finding_then_a_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    findings_schema: Callable[..., None],
+):
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    assert main(_model_argv(tmp_path, "--format", "jsonl", "--with-checks")) == 1
+    *lines, summary = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    for line in lines:
+        findings_schema(line, "finding")
+    findings_schema(summary, "summary")
+    assert summary["total"] == len(lines)
+    assert sum(summary["counts"].values()) == len(lines)
+    assert "nl:cancel:meaning" in {f["id"] for f in lines}
+    assert len({f["id"] for f in lines}) == len(lines)  # model findings that duplicate a check are dropped
+
+
+def test_cli_json_output_matches_the_committed_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    findings_schema: Callable[..., None],
+):
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 1
+    data = json.loads(capsys.readouterr().out)
+    findings_schema(data)
+    assert data["findings"]
+
+
+def test_cli_progress_goes_to_a_terminal_stderr_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fake = fake_http(monkeypatch, *[answer(GOOD)] * 80)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    main(_model_argv(tmp_path, "--format", "csv"))
+    out, err = capsys.readouterr()
+    n = _completions(fake)
+    assert f"reviewed {n}/{n}" in err
+    assert "reviewed" not in out
+    fake_http(monkeypatch, *[answer(GOOD)] * 80)
+    main(_model_argv(tmp_path, "--format", "json"))
+    assert "reviewed" not in capsys.readouterr().err  # never with JSON output
+
+
+def test_cli_rerun_with_the_same_log_asks_only_for_what_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    first = fake_http(monkeypatch, *[answer(GOOD)] * 3, *[answer("nope")] * 80)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 3
+    entries = 3 + (_completions(first) - 3) // 2  # each failed entry was asked twice
+    capsys.readouterr()
+    second = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 1
+    assert _completions(second) == entries - 3
+    out, err = capsys.readouterr()
+    assert "reused 3 answers" in err
+    assert json.loads(out)["errors"] == []
+    third = fake_http(monkeypatch)
+    assert main(_model_argv(tmp_path, "--format", "json")) == 1
+    assert _completions(third) == 0
+    assert f"reused {entries} answers" in capsys.readouterr().err
+
+
+def test_cli_resume_asks_again_for_a_changed_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    target = tmp_path / "messages.po"
+    target.write_text(Path(NL).read_text(encoding="utf-8"), encoding="utf-8")
+    argv = _model_argv(tmp_path, "--format", "json")
+    argv[2] = str(target)
+    fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    target.write_text(target.read_text(encoding="utf-8").replace('"Annuleren"', '"Afbreken"'), encoding="utf-8")
+    again = fake_http(monkeypatch, *[answer(GOOD)] * 40)
+    main(argv)
+    assert _completions(again) == 1
+    capsys.readouterr()
+
+
+def test_resume_skips_a_cut_off_log_line(tmp_path: Path):
+    log = tmp_path / "log.jsonl"
+    log.write_text('{"canary": "x"}\n{"outcome": "ok", "request_sha', encoding="utf-8")
+    c = ModelClient(BASE, "m", log_path=log, transport=Fake())
+    c.load_answers()
+    assert c.answers == {}

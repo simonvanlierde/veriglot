@@ -25,11 +25,12 @@ veriglot check src/locales/en/messages.po src/locales/*/messages.po
 ```
 
 The source catalog is skipped when it appears among the targets. `--format json` prints
-one object with `schema_version`, `findings` and `errors`; `--format csv` writes the
+one object with `schema_version`, `findings` and `errors`, also when the command fails;
+[`findings.schema.json`](src/veriglot/findings.schema.json) describes it. `--format csv` writes the
 review sheet. Flat JSON catalogs (`{"key": "text"}`, such as `nl.json`) can be checked too.
 
 Each finding has a stable `id` (`<locale>:<key>:<kind>`), the source and target text, a
-`fingerprint` of both, and one of these kinds:
+`fingerprint` of both, and one of these kinds (`veriglot kinds [--format json]` lists them too):
 
 | Kind | Severity | Finds |
 | --- | --- | --- |
@@ -104,7 +105,14 @@ veriglot review-model src/locales/en/messages.po src/locales/nl/messages.po \
   retried once. An entry that still fails is reported on stderr and in the JSON `errors`, and the
   exit code is 3.
 - Every call is appended to `--log` (default `veriglot-model.log.jsonl`): model, server version,
-  prompt name and SHA-256, settings, attempt, finish reason, token counts and the raw answer.
+  prompt name and SHA-256, a `request_sha256` of the model, settings, schema and rendered prompt,
+  attempt, finish reason, token counts and the raw answer.
+- A rerun with the same `--log` reuses every answer there whose `request_sha256` matches and asks only
+  for the rest, so a stopped or partly failed run resumes. A changed entry, glossary, prompt, model or
+  setting is asked again. Use a new `--log` for a fresh run.
+- `--format jsonl` prints each finding as one line as soon as its entry is answered, then a summary
+  line with `schema_version`, `total`, `counts` per severity and `errors`. When stderr is a terminal
+  and the format is not `json` or `jsonl`, `reviewed N/M` shows progress there.
 - `--with-checks` merges the deterministic findings. Placeholder, plural, tag and syntax problems
   stay with those checks; the prompt tells the model not to report them.
 - `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'` adds request fields, for
@@ -140,8 +148,12 @@ veriglot bench run data/bench/items.jsonl --out data/bench/runs/m1 --base-url ht
 veriglot bench score data/bench/items.jsonl data/bench/runs/m1
 ```
 
-`bench run` appends each answer as it arrives, asks again for failed ones when rerun into the same `--out`
-(and refuses a different model, prompt or items there), and exits 3 if any answer failed. A MetricX-24
+`bench make` prints a JSON object with `schema_version`, the items `path`, the counts per language and
+kind, and `errors`. `bench run` appends each answer as it arrives, asks again for failed ones when rerun
+into the same `--out` (and refuses a different model, prompt or items there), prints the manifest with
+`schema_version`, `run_dir`, `failed` and `errors`, and exits 3 if any answer failed. An unknown `--modes`
+value is a usage error (exit 2). `bench score --format json` prints the cells of each run and mode
+(`k`, `n`, `failed`, `kind_match`, `rate`, `interval`) instead of the Markdown table. A MetricX-24
 quality-estimation baseline comes from `uv run scripts/metricx_qe.py` (it needs a GPU and a checkout of
 google-research/metricx; see its docstring) and is tabulated with `bench score ITEMS --qe DIR`.
 Call logs end in `.log.jsonl` and are git-ignored; each starts with the canary line.

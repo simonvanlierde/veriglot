@@ -7,12 +7,16 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from veriglot.cli import main
 from veriglot.csvio import COLUMNS, read_decisions, write_findings
-from veriglot.review import check_entry
+from veriglot.review import Kind, check_entry
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EN = str(FIXTURES / "credit-matrix/en/messages.po")
@@ -150,3 +154,31 @@ def test_formula_cells_are_neutralised_and_round_trip():
     decisions = read_decisions(io.StringIO(back.getvalue()))
     assert [d.edited for d in decisions] == texts
     assert [d.proposed for d in decisions] == texts
+
+
+def test_check_json_matches_the_committed_schema(
+    capsys: pytest.CaptureFixture[str], findings_schema: Callable[..., None]
+):
+    assert main(["check", EN, BROKEN, "--format", "json"]) == 1
+    findings_schema(json.loads(capsys.readouterr().out))
+
+
+def test_error_json_has_the_success_shape(capsys: pytest.CaptureFixture[str], findings_schema: Callable[..., None]):
+    assert main(["check", EN, "nope.po", "--format", "json"]) == 3
+    data = json.loads(capsys.readouterr().out)
+    findings_schema(data)
+    assert data["findings"] == []
+
+
+def test_kinds_lists_every_kind_and_who_reports_it(capsys: pytest.CaptureFixture[str]):
+    assert main(["kinds", "--format", "json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["schema_version"] == 1
+    assert data["errors"] == []
+    by_kind = {k["kind"]: k for k in data["kinds"]}
+    assert set(by_kind) == {str(k) for k in Kind}
+    assert by_kind["untranslated"]["reported_by"] == ["check", "review-model"]
+    assert by_kind["meaning"]["reported_by"] == ["review-model"]
+    assert by_kind["placeholder"]["reported_by"] == ["check"]
+    assert main(["kinds"]) == 0
+    assert "whitespace" in capsys.readouterr().out

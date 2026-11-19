@@ -26,6 +26,7 @@ dev = [
   "ty>=0.0.93",
   "jupyterlab>=4.6.4",
   "hypothesis>=6",
+  "jsonschema>=4.26.0",
 ]
 
 # Research projects are packaged too, so notebooks can `import veriglot`

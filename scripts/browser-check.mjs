@@ -125,6 +125,36 @@ await page.waitForTimeout(300);
 check("decision on a vanished finding is dropped", (await counter()).startsWith("0 decided"), await counter());
 check("drop is reported", (await page.textContent("#message")).includes("dropped"), await page.textContent("#message"));
 
+// Wide screens: source, translation and proposed sit side by side.
+await pick("normsPosition");
+const tops = await page.locator("#detail-body pre").evaluateAll((pres) => pres.map((p) => p.getBoundingClientRect().top));
+check("texts side by side on a wide screen", tops.length === 3 && new Set(tops).size === 1, JSON.stringify(tops));
+
+// A key the target lacks: Edit starts from the source, selected, and saving adds the entry.
+await pick("stepContributors");
+await page.keyboard.press("e");
+const start = await page.evaluate(() => { const a = document.getElementById("edited"); return a.value.slice(a.selectionStart, a.selectionEnd); });
+check("edit on a missing entry starts from the selected source", start === "Contributors", JSON.stringify(start));
+check("unsaved changes are marked", await page.evaluate(() => document.getElementById("counter").classList.contains("dirty")));
+await page.keyboard.type("Bijdragers");
+await page.click("#save");
+// The message of the previous save is still shown, so wait for this row's outcome.
+await page.waitForFunction(() => document.querySelector("#results")?.textContent.includes("stepContributors"));
+const inserted = (await page.textContent("#message")).includes("1 applied") && readFileSync(nl, "utf8").includes('msgid "stepContributors"\nmsgstr "Bijdragers"\n');
+check("saving an edit on a missing entry adds it to the catalog", inserted, await page.textContent("#results"));
+
+// Phones: picking a finding scrolls its detail, which sits below the list, into view.
+await page.setViewportSize({ width: 390, height: 844 });
+await page.fill("#f-text", "");
+await rows().last().click();
+const top = await page.evaluate(() => document.getElementById("detail").getBoundingClientRect().top);
+check("picking on a phone shows the detail", top >= 0 && top < 844 / 3, `detail top ${top}`);
+await axe("phone");
+await page.emulateMedia({ colorScheme: "dark" });
+await axe("phone, dark");
+await page.emulateMedia({ colorScheme: "light" });
+await page.setViewportSize({ width: 1280, height: 720 });
+
 // Main flow: edit one finding by keyboard and save.
 await pick("cancel");
 await page.keyboard.press("e");

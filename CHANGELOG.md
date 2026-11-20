@@ -18,6 +18,11 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 - `veriglot review SOURCE TARGET...` serves a local web page on 127.0.0.1 to filter findings, edit, accept or reject them and save through the same apply code as `veriglot apply`, with CSV export and import.
 - Python development scaffold and [review design](docs/design.md), including the planned CSV and local web review interfaces.
 
+### Changed
+
+- The review page shows Source, Translation and Proposed side by side on wide screens; on narrow screens, picking a finding scrolls its detail into view. Save is the main header action, CSV export and import are quieter links, unsaved changes are marked in the counter, and the key help is folded under "Keys and markers". Edit on a finding with no translation and no proposal starts from the source text, selected, instead of an empty box.
+- `veriglot apply` and the review page add a source key the target `.po` lacks as a new entry at the end of the file, with the source entry's extracted comments, references, flags (without `fuzzy`) and `msgctxt`, in the file's line ending; such rows were rejected as `unknown` before. JSON catalogs stay check-only.
+
 ### Fixed
 
 - The JSON printed when a command fails keeps the success shape (`findings: []` for `check` and `review-model`), and Ctrl-C with `--format json` or `jsonl` prints the object too.

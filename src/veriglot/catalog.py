@@ -155,24 +155,61 @@ def _load_json(path: Path, raw: bytes) -> Catalog:
     return Catalog(path, path.stem, {k: Entry(k, v, "", 0) for k, v in data.items()}, raw)
 
 
-def write_texts(catalog: Catalog, texts: dict[str, str]) -> None:
+def _source_head(source: Catalog | None, key: str) -> list[str]:
+    """The comment, ``msgctxt`` and ``msgid`` lines of ``key`` in ``source``, without line endings.
+
+    Translator comments (``# ``) and previous msgids (``#|``) describe the source's own translation
+    and are left out, as is a ``fuzzy`` flag.
+    """
+    if source is None or key not in source.entries:
+        msg = f"no source entry for new key {key!r}"
+        raise ValueError(msg)
+    if source.path.suffix != ".po":
+        return [f"msgid {escape(key)}"]
+    lines = _lines(source.raw.decode("utf-8-sig"))
+    line = source.entries[key].line
+    i = line - 1
+    end = _block_end(lines, i) if 0 <= i < len(lines) else i
+    if not (0 <= i < len(lines) and lines[i].lstrip().startswith("msgid ") and _string(lines[i:end]) == key):
+        msg = f"{source.path}:{line}: expected msgid {key!r} here"
+        raise ValueError(msg)
+    start = i
+    while (
+        start > 0
+        and (s := lines[start - 1].strip())
+        and not s.startswith("#~")
+        and (s[0] in '#"' or s.startswith("msgctxt"))
+    ):
+        start -= 1
+    while lines[start].lstrip().startswith('"'):  # the end of a previous entry with no blank line after it
+        start += 1
+    head = [x.rstrip("\r\n") for x in lines[start:end] if not (c := x.lstrip()).startswith("#") or c[1:2] in ".:,"]
+    _clear_fuzzy(head, next(n for n, x in enumerate(head) if x.lstrip().startswith("msgid ")))
+    return head
+
+
+def write_texts(catalog: Catalog, texts: dict[str, str], *, source: Catalog | None = None) -> None:
     """Replace the ``msgstr`` of each key in ``texts`` and leave every other byte alone.
 
     The new text is written as one ``msgstr "..."`` line, as Lingui writes them, and a
-    ``fuzzy`` flag on that entry is dropped: the text has been reviewed. The file is
-    replaced atomically.
+    ``fuzzy`` flag on that entry is dropped: the text has been reviewed. A key the catalog
+    lacks is appended as a new entry with the extracted comments, references, flags (without
+    ``fuzzy``), ``msgctxt`` and ``msgid`` of its ``source`` entry, in the file's line ending.
+    The file is replaced atomically.
 
     Raises:
         CatalogChangedError: the file changed since ``catalog`` was read.
-        ValueError: the catalog is not a ``.po`` file, or an entry's line does not hold its msgid.
+        ValueError: the catalog is not a ``.po`` file, an entry's line does not hold its msgid,
+            or a new key has no ``source`` entry.
     """
     if catalog.path.suffix != ".po":
         msg = f"{catalog.path}: only .po catalogs can be written"
         raise ValueError(msg)
     bom = codecs.BOM_UTF8 if catalog.raw.startswith(codecs.BOM_UTF8) else b""
     lines = _lines(catalog.raw.decode("utf-8-sig"))
+    new = [key for key in texts if key not in catalog.entries]
     # Replace from the bottom up so earlier line numbers stay valid.
-    for key in sorted(texts, key=lambda k: catalog.entries[k].line, reverse=True):
+    for key in sorted(texts.keys() - new, key=lambda k: catalog.entries[k].line, reverse=True):
         line = catalog.entries[key].line
         i = line - 1
         end = _block_end(lines, i) if 0 <= i < len(lines) else i
@@ -188,6 +225,14 @@ def write_texts(catalog: Catalog, texts: dict[str, str]) -> None:
         newline = lines[stop - 1][len(lines[stop - 1].rstrip("\r\n")) :]
         lines[end:stop] = [f"msgstr {escape(texts[key])}{newline}"]
         _clear_fuzzy(lines, i)
+    ending = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    for key in new:
+        head = _source_head(source, key)
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += ending
+        if lines and lines[-1].strip():
+            lines.append(ending)
+        lines += [line + ending for line in head] + [f"msgstr {escape(texts[key])}{ending}"]
     if catalog.path.read_bytes() != catalog.raw:
         msg = f"{catalog.path} changed since it was read; check it again before applying"
         raise CatalogChangedError(msg)

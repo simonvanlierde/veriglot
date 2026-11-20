@@ -84,7 +84,7 @@ def apply_decisions(
     written = bool(changes) and not dry_run
     if written:
         try:
-            write_texts(target, changes)
+            write_texts(target, changes, source=source)
         except CatalogChangedError as exc:
             outcomes = [Outcome(row.id, "rejected", "catalog changed", str(exc)) for row in rows]
             written = False
@@ -121,20 +121,22 @@ def _decide(  # noqa: C901, PLR0911, PLR0912 - one return per outcome keeps the 
     if not text:
         field = "proposed" if decision == "accept" else "edited"
         return rejected("invalid", f"{decision} needs text in the {field} column")
-    if key not in current:
-        return rejected("unknown", f"no {key!r} entry for {target.locale} in {target.path.as_posix()}")
+    if key not in current and key not in source.entries:
+        return rejected("unknown", f"no {key!r} entry for {target.locale} in {target.path.as_posix()} or the source")
     if is_read_only(key, read_only):
         return rejected("read-only", f"{key!r} is vendored; fix it upstream", text)
     if target.path.suffix != ".po":
         return rejected("unsupported", f"{target.path.suffix} catalogs are check-only", text)
     # Writing unchanged text to a fuzzy entry confirms it: the write drops the flag.
-    fuzzy = target.entries[key].fuzzy and key not in changes
-    if current[key] == text and not fuzzy:
+    fuzzy = key in target.entries and target.entries[key].fuzzy and key not in changes
+    # A key the target lacks is checked as an empty translation, as check reports it, and written as a new entry.
+    now = current.get(key, "")
+    if now == text and not fuzzy:
         return Outcome(row.id, "skipped", "already applied", text=text)
     source_text = source.entries[key].text if key in source.entries else ""
-    if fingerprint(source_text, current[key]) != row.fingerprint:
+    if fingerprint(source_text, now) != row.fingerprint:
         # Only a kind the checks can report may be "resolved"; a model kind is stale as soon as the text changed.
-        detected = {f.kind for f in check_entry(target.locale, key, source_text, current[key])}
+        detected = {f.kind for f in check_entry(target.locale, key, source_text, now)}
         if key in changes and Kind(kind) not in MODEL_ONLY_KINDS and kind not in detected:
             return Outcome(row.id, "skipped", "resolved", "an earlier row fixed it", text)
         return rejected("stale", "the source or target text changed after the review", text)

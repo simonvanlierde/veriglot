@@ -103,7 +103,8 @@ whose msgids are keys and whose `en` msgstrs are the source text. The modules:
 - `apply` takes `DecisionRow`s and returns an `ApplyReport` with one outcome per row.
   It skips rows for another locale and rows an earlier row resolved; it rejects unknown
   ids and kinds, stale fingerprints, vendored keys and text that fails the checks with an
-  error, and treats a row whose text is already in place as skipped. If the file changed
+  error, and treats a row whose text is already in place as skipped. A source key the
+  target lacks is checked as an empty translation and appended as a new entry. If the file changed
   before the write, every row is rejected as `catalog changed`.
 - `csvio` maps findings and decisions to the CSV columns
   `id,locale,key,kind,severity,source,target,context,message,proposed,fingerprint,decision,edited,note`.

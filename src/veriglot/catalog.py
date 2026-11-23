@@ -155,7 +155,7 @@ def _load_json(path: Path, raw: bytes) -> Catalog:
     return Catalog(path, path.stem, {k: Entry(k, v, "", 0) for k, v in data.items()}, raw)
 
 
-def _source_head(source: Catalog | None, key: str) -> list[str]:
+def _source_head(source: Catalog | None, key: str, lines: list[str] | None) -> list[str]:
     """The comment, ``msgctxt`` and ``msgid`` lines of ``key`` in ``source``, without line endings.
 
     Translator comments (``# ``) and previous msgids (``#|``) describe the source's own translation
@@ -164,9 +164,8 @@ def _source_head(source: Catalog | None, key: str) -> list[str]:
     if source is None or key not in source.entries:
         msg = f"no source entry for new key {key!r}"
         raise ValueError(msg)
-    if source.path.suffix != ".po":
+    if lines is None:
         return [f"msgid {escape(key)}"]
-    lines = _lines(source.raw.decode("utf-8-sig"))
     line = source.entries[key].line
     i = line - 1
     end = _block_end(lines, i) if 0 <= i < len(lines) else i
@@ -226,8 +225,9 @@ def write_texts(catalog: Catalog, texts: dict[str, str], *, source: Catalog | No
         lines[end:stop] = [f"msgstr {escape(texts[key])}{newline}"]
         _clear_fuzzy(lines, i)
     ending = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    source_lines = _lines(source.raw.decode("utf-8-sig")) if new and source and source.path.suffix == ".po" else None
     for key in new:
-        head = _source_head(source, key)
+        head = _source_head(source, key, source_lines)
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += ending
         if lines and lines[-1].strip():

@@ -183,3 +183,57 @@ def test_failed_write_leaves_the_file_and_no_temp_file(tmp_path: Path, monkeypat
     monkeypatch.undo()
     write_texts(load_catalog(path), {"cancel": "Afbreken"})
     assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_write_inserts_a_missing_key_from_the_source_block(tmp_path: Path):
+    source = tmp_path / "en.po"
+    source.write_text(
+        'msgid ""\nmsgstr ""\n"Language: en\\n"\n\n'
+        '# translator note in en\n#. extracted\n#: src/App.tsx:3\n#, fuzzy, icu-format\n#| msgid "old"\n'
+        'msgctxt "menu"\nmsgid ""\n"long "\n"key"\nmsgstr "Long key"\n',
+        encoding="utf-8",
+    )
+    path = tmp_path / "nl.po"
+    head = codecs.BOM_UTF8 + b'msgid ""\r\nmsgstr ""\r\n"Language: nl\\n"\r\n\r\nmsgid "a"\r\nmsgstr "b"'
+    path.write_bytes(head)
+    write_texts(load_catalog(path), {"long key": 'Lange "sleutel"'}, source=load_catalog(source))
+    assert path.read_bytes() == head + (
+        b'\r\n\r\n#. extracted\r\n#: src/App.tsx:3\r\n#, icu-format\r\nmsgctxt "menu"\r\n'
+        b'msgid ""\r\n"long "\r\n"key"\r\nmsgstr "Lange \\"sleutel\\""\r\n'
+    )
+    entry = load_catalog(path).entries["long key"]
+    assert (entry.text, entry.fuzzy) == ('Lange "sleutel"', False)
+    assert entry.context.startswith("msgctxt: menu")
+
+
+def test_write_inserts_a_missing_key_without_a_po_source(tmp_path: Path):
+    path = tmp_path / "nl.po"
+    path.write_text('msgid ""\nmsgstr ""\n"Language: nl\\n"\n', encoding="utf-8")
+    source = tmp_path / "en.json"
+    source.write_text('{"a\\nb": "A"}', encoding="utf-8")
+    write_texts(load_catalog(path), {"a\nb": "Een"}, source=load_catalog(source))
+    assert path.read_text(encoding="utf-8").endswith('\n\nmsgid "a\\nb"\nmsgstr "Een"\n')
+
+
+def test_write_refuses_a_missing_key_without_its_source(tmp_path: Path):
+    path = tmp_path / "messages.po"
+    shutil.copy(NL, path)
+    with pytest.raises(ValueError, match="noSuchKey"):
+        write_texts(load_catalog(path), {"noSuchKey": "x"})
+    assert path.read_bytes() == NL.read_bytes()
+
+
+def test_insert_classifies_indented_comments(tmp_path: Path):
+    source = tmp_path / "en.po"
+    source.write_text(
+        'msgid ""\nmsgstr ""\n"Language: en\\n"\n\n'
+        ' # translator-only note\n #. extracted note\n  #: src/App.tsx:3\n #, fuzzy\n #| msgid "old"\n'
+        'msgid "k"\nmsgstr "K"\n',
+        encoding="utf-8",
+    )
+    path = tmp_path / "nl.po"
+    path.write_text('msgid ""\nmsgstr ""\n"Language: nl\\n"\n', encoding="utf-8")
+    write_texts(load_catalog(path), {"k": "Ka"}, source=load_catalog(source))
+    assert path.read_text(encoding="utf-8").endswith(
+        '\n\n #. extracted note\n  #: src/App.tsx:3\nmsgid "k"\nmsgstr "Ka"\n'
+    )

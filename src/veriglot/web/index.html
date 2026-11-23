@@ -15,8 +15,10 @@
   <div class="actions">
     <button type="button" id="save">Save decisions</button>
     <button type="button" id="preview">Preview</button>
-    <button type="button" id="export">Export CSV</button>
-    <label class="file">Import CSV <input type="file" id="import" accept=".csv,text/csv"></label>
+    <div class="csv" role="group" aria-label="CSV">
+      <button type="button" id="export">Export CSV</button>
+      <label class="file">Import CSV <input type="file" id="import" accept=".csv,text/csv"></label>
+    </div>
   </div>
   <p id="message" role="status"></p>
 </header>
@@ -35,8 +37,11 @@
   <section id="detail" aria-labelledby="detail-h" class="detail-pane" tabindex="-1">
     <h2 id="detail-h">Selected finding</h2>
     <div id="detail-body"><p>No finding selected.</p></div>
-    <p class="hint">Keys: j or Down for the next finding, k or Up for the previous, a accept, r reject, e edit, c clear.
-      Spaces at the start or end of a text show as &middot;, line breaks as &crarr;, tabs as &rarr;.</p>
+    <details class="hint">
+      <summary>Keys and markers</summary>
+      <p>Keys: j or Down for the next finding, k or Up for the previous, a accept, r reject, e edit, c clear.</p>
+      <p>Spaces at the start or end of a text show as &middot;, line breaks as &crarr;, tabs as &rarr;.</p>
+    </details>
   </section>
   <section aria-labelledby="results-h" class="results-pane">
     <h2 id="results-h">Results</h2>

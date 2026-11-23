@@ -88,6 +88,7 @@ function render() {
   say("shown", `${rows.length} of ${state.findings.length} findings shown`);
   const decided = [...state.decisions.values()].filter((d) => d.decision).length;
   say("counter", `${decided} decided${state.dirty ? ", unsaved changes" : ""}`);
+  $("counter").classList.toggle("dirty", state.dirty);
   renderDetail();
 }
 
@@ -111,10 +112,10 @@ function renderDetail() {
   const clear = el("button", { type: "button", disabled: !d }, "Clear (c)");
   clear.setAttribute("aria-keyshortcuts", "c");
   clear.addEventListener("click", () => decide(""));
-  const parts = [meta, text("Source", f.source), text("Translation", f.target), text("Proposed", f.proposed),
+  const parts = [meta, el("div", { className: "texts" }, text("Source", f.source), text("Translation", f.target), text("Proposed", f.proposed)),
     el("div", { className: "buttons", role: "group" }, choice("accept", "Accept", "a", f.proposed == null || f.proposed === ""),
       choice("reject", "Reject", "r"), choice("edit", "Edit", "e"), clear)];
-  parts[4].setAttribute("aria-label", "Decision");
+  parts[2].setAttribute("aria-label", "Decision");
   if (d?.decision === "edit") {
     const area = el("textarea", { id: "edited", value: d.edited, spellcheck: false });
     // A new object each time, so a save in flight can tell the row changed after it was sent.
@@ -131,25 +132,28 @@ const outcomeText = (o) => `${o.status}${o.reason ? `: ${o.reason}` : ""}${o.det
 function markDirty() {
   state.dirty = true;
   say("counter", `${[...state.decisions.values()].filter((d) => d.decision).length} decided, unsaved changes`);
+  $("counter").classList.add("dirty");
 }
 
 function decide(name) {
   const f = state.findings.find((x) => x.id === state.selected);
   if (!f) return;
   if (name === "accept" && !f.proposed) return;
+  const old = state.decisions.get(f.id);
+  // A missing translation (none, or whitespace only) with no proposal starts from the source, selected so typing replaces it.
+  const start = old?.edited || f.proposed || (f.target.trim() ? f.target : "");
   if (name === "") state.decisions.delete(f.id);
   else {
-    const old = state.decisions.get(f.id);
     // The reviewer sees the current text when deciding, so the fingerprint is the current one.
     state.decisions.set(f.id, {
       decision: name, fingerprint: f.fingerprint, note: old?.note ?? "",
-      edited: name === "edit" ? old?.edited || f.proposed || f.target : old?.edited ?? "",
+      edited: name === "edit" ? start || f.source : old?.edited ?? "",
     });
   }
   state.outcomes.delete(f.id);
   state.dirty = true;
   render();
-  if (name === "edit") $("edited")?.focus();
+  if (name === "edit") { $("edited")?.focus(); if (!start) $("edited")?.select(); }
   else focusButton(f.id);
 }
 
@@ -249,9 +253,16 @@ document.addEventListener("keydown", (e) => {
     a: () => decide("accept"), r: () => decide("reject"), e: () => decide("edit"), c: () => decide("") }[e.key];
   if (action) { e.preventDefault(); action(); }
 });
+// Matches the one-column breakpoint in style.css.
+const narrow = matchMedia("(max-width: 800px)");
 $("list").addEventListener("click", (e) => {
   const id = e.target.closest("button")?.dataset.id;
-  if (id) { state.selected = id; render(); focusButton(id); }
+  if (!id) return;
+  state.selected = id;
+  render();
+  focusButton(id);
+  // One column: the detail sits below the list, out of sight.
+  if (narrow.matches) $("detail").scrollIntoView({ block: "start" });
 });
 $("filters").addEventListener("input", render);
 $("filters").addEventListener("submit", (e) => e.preventDefault());

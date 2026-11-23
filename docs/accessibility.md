@@ -6,7 +6,7 @@ statement covers that page. The command line has no graphical interface.
 ## What is in place
 
 - Every control has a visible label or text; the shortcuts are also announced
-  (`aria-keyshortcuts`) and listed on the page.
+  (`aria-keyshortcuts`) and listed on the page under "Keys and markers".
 - Everything works with the keyboard alone: Tab moves through the filters, the list (one
   tab stop, arrow keys or j/k inside), the decision buttons and the edit field.
 - Focus is outlined in all controls, in light and dark colour schemes.
@@ -15,14 +15,15 @@ statement covers that page. The command line has no graphical interface.
 - Messages and errors show in one line under the page header. Errors are bold, in the
   error colour, and the text says what failed.
 - Leaving the page with unsaved decisions asks for confirmation.
-- The layout reflows to one column on narrow screens. On touch screens, controls are at
+- The layout reflows to one column on narrow screens, where picking a finding scrolls its
+  detail into view. On touch screens, controls are at
   least 44 pixels high.
 
 ## What was tested
 
 - axe-core 4 through `@axe-core/playwright` (WCAG 2.0, 2.1 and 2.2 A and AA rules plus
-  best practices) on the list, with the edit field open and after a save, in light and dark
-  colour schemes: 0 violations on the 10-finding test catalog.
+  best practices) on the list, with the edit field open, at 390 pixels wide and after a
+  save, in light and dark colour schemes: 0 violations on the 10-finding test catalog.
 - A Playwright run that filters, accepts an edit by keyboard and saves, and checks that a
   failed load shows as an error and that a list row keeps a visible focus ring.
 - Run both with `scripts/browser-check.sh`; the date and result of the last run are in the

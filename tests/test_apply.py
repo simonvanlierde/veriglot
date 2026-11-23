@@ -64,7 +64,7 @@ def test_accept_edit_and_every_rejection_are_accounted(target: Path):
         ("cancel:untranslated", "applied", ""),
         ("annContributorRestored:placeholder", "rejected", "invalid"),
         ("sampleNames:whitespace", "rejected", "stale"),
-        ("noSuchKey:missing", "rejected", "unknown"),
+        ("noSuchKey:missing", "rejected", "unknown"),  # in neither catalog
         ("cancel:untranslated", "skipped", "other locale"),
         (f"{ROLE}:untranslated", "rejected", "read-only"),
         ("errImportNoXmlContribs:tag", "skipped", "declined"),
@@ -181,4 +181,51 @@ def test_later_model_row_on_a_changed_entry_is_stale_not_resolved(target: Path):
     assert statuses(report) == [
         ("output.labelSeparator:whitespace", "applied", ""),
         ("output.labelSeparator:meaning", "rejected", "stale"),
+    ]
+
+
+def test_edit_on_a_key_absent_from_the_target_inserts_it(target: Path):
+    before = target.read_bytes()
+    rows = [row("stepContributors", "missing", "Contributors", "", "edit", edited="Bijdragers")]
+    assert statuses(apply_decisions(SOURCE, load_catalog(target), rows, dry_run=True)) == [
+        ("stepContributors:missing", "applied", "")
+    ]
+    assert target.read_bytes() == before
+    later = row("stepContributors", "missing", "Contributors", "", "edit", edited="Medewerkers")
+    report = apply_decisions(SOURCE, load_catalog(target), [*rows, later])
+    assert statuses(report) == [
+        ("stepContributors:missing", "applied", ""),
+        ("stepContributors:missing", "skipped", "resolved"),
+    ]
+    assert target.read_bytes() == before + b'\nmsgid "stepContributors"\nmsgstr "Bijdragers"\n'
+    assert load_catalog(target).entries["stepContributors"].text == "Bijdragers"
+    again = apply_decisions(SOURCE, load_catalog(target), rows)
+    assert statuses(again) == [("stepContributors:missing", "skipped", "already applied")]
+
+
+def test_insert_keeps_stale_read_only_validation_and_check_only_rules(tmp_path: Path, target: Path):
+    source = tmp_path / "en.po"
+    source.write_text(
+        SOURCE.raw.decode().replace('msgstr "Contributors"', 'msgstr "Co-authors"')
+        + '\nmsgid "https://credit.niso.org/contributor-roles/new/name"\nmsgstr "New"\n'
+        + '\nmsgid "greet"\nmsgstr "Hi {name}"\n',
+        encoding="utf-8",
+    )
+    rows = [
+        row("stepContributors", "missing", "Contributors", "", "edit", edited="Bijdragers"),
+        row("https://credit.niso.org/contributor-roles/new/name", "missing", "New", "", "edit", edited="Nieuw"),
+        row("greet", "missing", "Hi {name}", "", "edit", edited="Hoi"),
+    ]
+    report = apply_decisions(load_catalog(source), load_catalog(target), rows)
+    assert [(o.status, o.reason) for o in report.outcomes] == [
+        ("rejected", "stale"),
+        ("rejected", "read-only"),
+        ("rejected", "invalid"),
+    ]
+    assert not report.written
+    json_target = tmp_path / "nl.json"
+    json_target.write_text("{}", encoding="utf-8")
+    rows = [row("stepContributors", "missing", "Contributors", "", "edit", edited="Bijdragers")]
+    assert statuses(apply_decisions(SOURCE, load_catalog(json_target), rows)) == [
+        ("stepContributors:missing", "rejected", "unsupported")
     ]

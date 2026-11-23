@@ -20,6 +20,7 @@ header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; pad
 h1 { font-size: 1.25rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 8px; }
 header p { margin: 0; color: var(--muted); }
+#counter.dirty { color: var(--warn); font-weight: 600; border: 1px solid currentcolor; border-radius: 4px; padding: 0 8px; }
 #message { flex-basis: 100%; color: var(--fg); }
 #message:empty { display: none; }
 #message.error { color: var(--bad); font-weight: 600; }
@@ -28,12 +29,15 @@ button, .file, select, input[type="search"], textarea { font: inherit; color: va
 button, .file { cursor: pointer; }
 button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 button:disabled { opacity: .6; cursor: not-allowed; }
-#save { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+#save { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+/* CSV round trips are occasional: quieter than Save and Preview. */
+.csv { display: flex; gap: 4px; padding-left: 8px; border-left: 1px solid var(--line); }
+.csv button, .csv .file { border-color: transparent; background: none; color: var(--accent); text-decoration: underline; padding-inline: 6px; }
 .file input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .file:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
 main { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.4fr); grid-template-areas: "list detail" "results detail"; gap: 16px; padding: 16px; align-items: start; }
 .list-pane { grid-area: list; } .detail-pane { grid-area: detail; position: sticky; top: 8px; } .results-pane { grid-area: results; }
-@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-areas: "list" "detail" "results"; } .detail-pane { position: static; } #list { max-height: 40vh; } }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-areas: "list" "detail" "results"; } .detail-pane { position: static; } #list { max-height: 40vh; } .csv { border-left: 0; padding-left: 0; margin-left: -6px; } }
 @media (pointer: coarse) { button, .file, select, input[type="search"] { min-height: 44px; } }
 #filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 #filters label { display: flex; flex-direction: column; font-size: .9rem; color: var(--muted); }
@@ -50,6 +54,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 .badge.accept, .badge.applied { color: var(--ok); } .badge.reject, .badge.rejected { color: var(--bad); } .badge.edit { color: var(--accent); }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 8px; }
 dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+.texts { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0 12px; }
 .text { margin: 4px 0 12px; }
 .text h3 { font-size: .95rem; margin: 0; color: var(--muted); }
 pre { margin: 0; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font: .95rem/1.4 ui-monospace, monospace; }
@@ -58,6 +63,8 @@ pre { margin: 0; padding: 8px; background: var(--panel); border: 1px solid var(-
 .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 label[for="edited"] { display: block; margin: 12px 0 4px; }
 textarea { width: 100%; min-height: 5rem; font-family: ui-monospace, monospace; }
-.hint { color: var(--muted); font-size: .9rem; }
+.hint { color: var(--muted); font-size: .9rem; margin-top: 12px; }
+.hint summary { cursor: pointer; width: fit-content; }
+.hint p { margin: 4px 0; }
 .results-pane:not(:has(li)) { display: none; }
 #results li { padding: 2px 0; overflow-wrap: anywhere; }

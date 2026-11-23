@@ -62,8 +62,9 @@ Every row is reported as applied, rejected (with the reason: `stale`, `unknown`,
 `invalid`, `read-only`, `catalog changed`, ...) or skipped (`other locale`, `resolved` by an
 earlier row, `already applied`, ...). Rows for other locales are skipped, so one sheet with
 every locale can be applied to each catalog in turn. Only the changed `msgstr` lines are
-rewritten, and a `fuzzy` flag on a written entry is dropped; editing a fuzzy entry to its
-current text confirms it. The file is replaced atomically, and not at all if it changed
+rewritten; a key the catalog lacks is added at the end with the extracted comments,
+references, flags and `msgctxt` of its source entry. A `fuzzy` flag on a written entry is
+dropped; editing a fuzzy entry to its current text confirms it. The file is replaced atomically, and not at all if it changed
 since it was read.
 
 Text cells that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, a

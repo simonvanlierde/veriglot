@@ -93,7 +93,7 @@ repos:
 
   # gitleaks' successor from the same authors. gitleaks takes security fixes only.
   - repo: https://github.com/betterleaks/betterleaks
-    rev: 8d77e1712fb06fd14444cc648686f1d5655e28a8 # frozen: v1.10.0
+    rev: 39d5bdcf34db54e944facac5cf6e8b03db5e2b99 # frozen: v1.10.1
     hooks:
       - id: betterleaks
 
@@ -109,7 +109,7 @@ repos:
   # and shellcheck over every `run:` when shellcheck is on PATH. jactionlint is a
   # maintained fork of actionlint that adds release, cache and concurrency checks.
   - repo: https://github.com/jdx/jactionlint
-    rev: 9e87e8f34edfc00b849a27807e26eff9d00b936d # frozen: v2.5.0
+    rev: 72c00452809bcca05b8bc12acdcf15dd7a9c1c5e # frozen: v2.6.0
     hooks:
       - id: jactionlint
 
@@ -146,7 +146,7 @@ repos:
         # Upstream leaves repo-review unpinned.
         additional_dependencies: ["repo-review[cli]==1.3.0"]
   - repo: https://github.com/rvben/rumdl-pre-commit
-    rev: b0cff962ee693b9e612c097d22e71e0cba127447 # frozen: v0.3.2
+    rev: df5a947a3af0dba56640e644c6b9316184749168 # frozen: v0.3.4
     hooks:
       - id: rumdl
         args: [--fix]
